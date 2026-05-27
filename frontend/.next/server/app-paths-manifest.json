@@ -1,0 +1,8 @@
+{
+  "/page": "app/page.js",
+  "/interview/start/page": "app/interview/start/page.js",
+  "/interview/[sessionId]/page": "app/interview/[sessionId]/page.js",
+  "/interview/mode-select/page": "app/interview/mode-select/page.js",
+  "/report/[sessionId]/page": "app/report/[sessionId]/page.js",
+  "/interview/voice/start/page": "app/interview/voice/start/page.js"
+}

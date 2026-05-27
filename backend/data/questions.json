@@ -1,0 +1,297 @@
+[
+  {
+    "id": "q_be_01",
+    "topic": "system_design",
+    "difficulty": "medium",
+    "question_type": "scenario",
+    "experience_level": "senior",
+    "question_text": "Design a URL shortening service like bit.ly. Walk me through your approach, focusing on scalability and data storage.",
+    "follow_up_texts": [
+      "How would you handle hash collisions?",
+      "How would you scale to 100 million URLs per day?",
+      "What database would you choose and why?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Core design", "weight": 0.4, "good": "Covers hashing, redirect storage, and read path", "bad": "Only describes the happy path"},
+        {"name": "Scalability", "weight": 0.3, "good": "Mentions caching, CDN, sharding", "bad": "Ignores scale concerns"},
+        {"name": "Data modeling", "weight": 0.3, "good": "Appropriate schema, indexes", "bad": "No DB design"}
+      ]
+    },
+    "tags": ["system_design", "databases", "scalability"]
+  },
+  {
+    "id": "q_be_02",
+    "topic": "databases",
+    "difficulty": "medium",
+    "question_type": "conceptual",
+    "experience_level": "mid",
+    "question_text": "Explain the difference between SQL and NoSQL databases. When would you choose one over the other?",
+    "follow_up_texts": [
+      "Can you give an example of a use case where NoSQL would be the wrong choice?",
+      "How do NoSQL databases handle transactions?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Conceptual accuracy", "weight": 0.5, "good": "Clearly explains ACID, schema, scalability trade-offs", "bad": "Vague or incorrect statements"},
+        {"name": "Practical judgment", "weight": 0.5, "good": "Gives concrete examples with reasoning", "bad": "No examples or context"}
+      ]
+    },
+    "tags": ["databases", "sql", "nosql"]
+  },
+  {
+    "id": "q_be_03",
+    "topic": "concurrency",
+    "difficulty": "hard",
+    "question_type": "conceptual",
+    "experience_level": "senior",
+    "question_text": "What are race conditions and deadlocks? How do you prevent them in a multi-threaded application?",
+    "follow_up_texts": [
+      "What is the difference between optimistic and pessimistic locking?",
+      "How would you detect a deadlock in production?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Definition accuracy", "weight": 0.3, "good": "Correct definitions with examples", "bad": "Confused or incorrect"},
+        {"name": "Prevention strategies", "weight": 0.4, "good": "Mentions locks, atomic ops, ordering", "bad": "Only vague answers"},
+        {"name": "Production awareness", "weight": 0.3, "good": "Knows how to detect/monitor", "bad": "No operational knowledge"}
+      ]
+    },
+    "tags": ["concurrency", "threading", "locking"]
+  },
+  {
+    "id": "q_be_04",
+    "topic": "api_design",
+    "difficulty": "easy",
+    "question_type": "conceptual",
+    "experience_level": "junior",
+    "question_text": "What is REST and what makes an API RESTful? What are the key HTTP methods and when do you use each?",
+    "follow_up_texts": [
+      "What's the difference between PUT and PATCH?",
+      "How do you handle API versioning?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "REST principles", "weight": 0.5, "good": "Statelessness, uniform interface, resource-based", "bad": "Only knows GET/POST"},
+        {"name": "HTTP methods", "weight": 0.5, "good": "Correct semantics for all methods", "bad": "Confuses methods"}
+      ]
+    },
+    "tags": ["api", "rest", "http"]
+  },
+  {
+    "id": "q_be_05",
+    "topic": "performance",
+    "difficulty": "medium",
+    "question_type": "scenario",
+    "experience_level": "mid",
+    "question_text": "A database query that used to take 50ms is now taking 5 seconds in production. How do you diagnose and fix it?",
+    "follow_up_texts": [
+      "What tools would you use to profile the query?",
+      "When does adding an index hurt performance?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Diagnostic process", "weight": 0.4, "good": "Systematic: EXPLAIN, query plan, index usage", "bad": "Jumps to solutions"},
+        {"name": "Root causes", "weight": 0.3, "good": "Missing index, N+1, data growth, lock contention", "bad": "Only mentions one cause"},
+        {"name": "Fixes", "weight": 0.3, "good": "Indexes, query rewrite, caching, pagination", "bad": "Vague"}
+      ]
+    },
+    "tags": ["performance", "databases", "debugging"]
+  },
+  {
+    "id": "q_fe_01",
+    "topic": "react",
+    "difficulty": "medium",
+    "question_type": "conceptual",
+    "experience_level": "mid",
+    "question_text": "Explain the React component lifecycle. How do hooks like useEffect replace lifecycle methods?",
+    "follow_up_texts": [
+      "What is the dependency array in useEffect and what happens if you omit it?",
+      "How do you prevent memory leaks in useEffect?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Lifecycle knowledge", "weight": 0.4, "good": "mount/update/unmount + cleanup", "bad": "Only knows componentDidMount"},
+        {"name": "Hooks understanding", "weight": 0.6, "good": "Dependencies, cleanup function, mental model", "bad": "Cargo-cults hooks without understanding"}
+      ]
+    },
+    "tags": ["react", "hooks", "frontend"]
+  },
+  {
+    "id": "q_fe_02",
+    "topic": "javascript",
+    "difficulty": "easy",
+    "question_type": "conceptual",
+    "experience_level": "junior",
+    "question_text": "What is the event loop in JavaScript and how does async/await work under the hood?",
+    "follow_up_texts": [
+      "What is the difference between Promise.all and Promise.allSettled?",
+      "What is a microtask vs a macrotask?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Event loop model", "weight": 0.5, "good": "Call stack, task queue, microtask queue", "bad": "Just says 'single-threaded'"},
+        {"name": "Async/await", "weight": 0.5, "good": "Syntactic sugar over Promises, execution order", "bad": "Thinks it's truly parallel"}
+      ]
+    },
+    "tags": ["javascript", "async", "event-loop"]
+  },
+  {
+    "id": "q_fe_03",
+    "topic": "performance",
+    "difficulty": "medium",
+    "question_type": "scenario",
+    "experience_level": "senior",
+    "question_text": "Your React app has a slow page that renders a list of 10,000 items. How do you make it performant?",
+    "follow_up_texts": [
+      "What is virtualization and how does react-window implement it?",
+      "How would you measure the performance improvement?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Virtualization", "weight": 0.4, "good": "Windowing, only render visible items", "bad": "Just says useMemo"},
+        {"name": "React optimizations", "weight": 0.3, "good": "memo, useMemo, useCallback, key prop", "bad": "Only one technique"},
+        {"name": "Measurement", "weight": 0.3, "good": "React Profiler, Lighthouse, Web Vitals", "bad": "No measurement strategy"}
+      ]
+    },
+    "tags": ["performance", "react", "virtualization"]
+  },
+  {
+    "id": "q_alg_01",
+    "topic": "algorithms",
+    "difficulty": "medium",
+    "question_type": "coding",
+    "experience_level": "mid",
+    "question_text": "Explain the time and space complexity of common sorting algorithms. When would you choose quicksort over mergesort?",
+    "follow_up_texts": [
+      "Why is quicksort O(n²) in the worst case and how do you mitigate it?",
+      "What is a stable sort and when does stability matter?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Complexity analysis", "weight": 0.5, "good": "Correct O() for major algorithms", "bad": "Incorrect or guessing"},
+        {"name": "Trade-off reasoning", "weight": 0.5, "good": "Cache locality, stability, in-place, practical factors", "bad": "No reasoning"}
+      ]
+    },
+    "tags": ["algorithms", "sorting", "complexity"]
+  },
+  {
+    "id": "q_alg_02",
+    "topic": "data_structures",
+    "difficulty": "easy",
+    "question_type": "conceptual",
+    "experience_level": "junior",
+    "question_text": "What is the difference between a stack and a queue? Give a real-world use case for each.",
+    "follow_up_texts": [
+      "How would you implement a stack using a queue?",
+      "What is a priority queue and where is it used?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Definitions", "weight": 0.4, "good": "LIFO vs FIFO, operations", "bad": "Confused"},
+        {"name": "Use cases", "weight": 0.6, "good": "Concrete, accurate examples", "bad": "Generic or wrong"}
+      ]
+    },
+    "tags": ["data_structures", "stack", "queue"]
+  },
+  {
+    "id": "q_beh_01",
+    "topic": "behavioral",
+    "difficulty": "medium",
+    "question_type": "behavioral",
+    "experience_level": "all",
+    "question_text": "Tell me about a time you had a significant technical disagreement with a colleague. How did you handle it and what was the outcome?",
+    "follow_up_texts": [
+      "What would you do differently now?",
+      "How did this experience change how you approach technical decisions?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Situation clarity", "weight": 0.2, "good": "Specific situation, clear context", "bad": "Vague"},
+        {"name": "Communication approach", "weight": 0.4, "good": "Data-driven, empathetic, collaborative", "bad": "Dismissive or aggressive"},
+        {"name": "Outcome and learning", "weight": 0.4, "good": "Positive outcome, lesson learned", "bad": "No reflection"}
+      ]
+    },
+    "tags": ["behavioral", "communication", "conflict"]
+  },
+  {
+    "id": "q_beh_02",
+    "topic": "behavioral",
+    "difficulty": "easy",
+    "question_type": "behavioral",
+    "experience_level": "all",
+    "question_text": "Describe a project you're most proud of. What was your contribution and what did you learn from it?",
+    "follow_up_texts": [
+      "What would you do differently if you started that project today?",
+      "How did you handle setbacks during the project?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Ownership", "weight": 0.3, "good": "Clear personal contribution", "bad": "Vague team effort"},
+        {"name": "Technical depth", "weight": 0.4, "good": "Technical details, challenges overcome", "bad": "Only high-level"},
+        {"name": "Self-awareness", "weight": 0.3, "good": "Honest reflection, areas for improvement", "bad": "No introspection"}
+      ]
+    },
+    "tags": ["behavioral", "ownership", "growth"]
+  },
+  {
+    "id": "q_sys_01",
+    "topic": "system_design",
+    "difficulty": "hard",
+    "question_type": "scenario",
+    "experience_level": "senior",
+    "question_text": "Design a notification system that can send millions of emails, SMS, and push notifications per day. Focus on reliability and delivery guarantees.",
+    "follow_up_texts": [
+      "How do you handle retries without sending duplicate notifications?",
+      "How do you handle unsubscribes at scale?",
+      "What happens if a downstream SMS provider is down?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Queue architecture", "weight": 0.35, "good": "Message queue, workers, DLQ, idempotency", "bad": "Synchronous calls only"},
+        {"name": "Reliability", "weight": 0.35, "good": "At-least-once delivery, deduplication, circuit breakers", "bad": "No failure handling"},
+        {"name": "Scale", "weight": 0.3, "good": "Partitioning, rate limiting, provider fallbacks", "bad": "No scale consideration"}
+      ]
+    },
+    "tags": ["system_design", "messaging", "reliability"]
+  },
+  {
+    "id": "q_devops_01",
+    "topic": "devops",
+    "difficulty": "medium",
+    "question_type": "conceptual",
+    "experience_level": "mid",
+    "question_text": "What is the difference between containers and virtual machines? What problem does Kubernetes solve?",
+    "follow_up_texts": [
+      "What is a pod in Kubernetes and how does it differ from a container?",
+      "How does Kubernetes handle service discovery?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "Container vs VM", "weight": 0.4, "good": "Kernel sharing, isolation levels, resource overhead", "bad": "Just 'containers are faster'"},
+        {"name": "Kubernetes value", "weight": 0.6, "good": "Scheduling, healing, scaling, service discovery", "bad": "Just 'it orchestrates containers'"}
+      ]
+    },
+    "tags": ["devops", "containers", "kubernetes"]
+  },
+  {
+    "id": "q_sec_01",
+    "topic": "security",
+    "difficulty": "medium",
+    "question_type": "conceptual",
+    "experience_level": "mid",
+    "question_text": "What is SQL injection and how do you prevent it? What other OWASP Top 10 vulnerabilities do you regularly defend against?",
+    "follow_up_texts": [
+      "What is the difference between authentication and authorization?",
+      "How do you securely store passwords?"
+    ],
+    "rubric": {
+      "criteria": [
+        {"name": "SQL injection", "weight": 0.4, "good": "Parameterized queries, ORM, input validation", "bad": "Only escaping"},
+        {"name": "OWASP awareness", "weight": 0.3, "good": "Mentions XSS, CSRF, broken auth, etc.", "bad": "Only SQL injection"},
+        {"name": "Auth/AuthZ", "weight": 0.3, "good": "Clear distinction, hashing, JWTs", "bad": "Confused concepts"}
+      ]
+    },
+    "tags": ["security", "owasp", "sql-injection"]
+  }
+]
