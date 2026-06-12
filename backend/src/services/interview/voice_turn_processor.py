@@ -72,22 +72,35 @@ class VoiceTurnState:
         await _send_json(self.ws, {"event": "turn", "speaker": "bot"})
         append_transcript_turn(self.session_id, "bot", text)
 
-        self.current_tts_task = asyncio.current_task()
+        async def _play() -> None:
+            # Stream sentences strictly one at a time. Streaming them
+            # concurrently interleaves each sentence's MP3 bytes on the single
+            # WebSocket, producing garbled audio on the client.
+            for sentence in sentences:
+                await self.tts.stream_sentence(sentence, self.ws)
 
+        # Run playback as its own task so handle_barge_in (a separate coroutine)
+        # can cancel just the TTS without killing the whole turn.
+        self.current_tts_task = asyncio.create_task(_play())
         try:
-            # Fire-and-gather — start TTS per sentence, play sequentially on client
-            tts_tasks = [
-                asyncio.create_task(self.tts.stream_sentence(sentence, self.ws))
-                for sentence in sentences
-            ]
-            await asyncio.gather(*tts_tasks)
+            await self.current_tts_task
         except asyncio.CancelledError:
-            # Barge-in cancelled us — leave bot_speaking=False (set in handle_barge_in)
+            # Barge-in cancelled playback; the mic was already reopened in
+            # handle_barge_in, so just unwind without surfacing the cancel.
             logger.debug("TTS stream cancelled by barge-in session=%s", self.session_id)
-            raise
+            return
         finally:
             self.bot_speaking = False
             self.current_tts_task = None
+
+        # Check if evaluation completed (state set to COMPLETE by evaluation pipeline)
+        session_data = get_voice_session(self.session_id)
+        if session_data and session_data.get("state") == "COMPLETE":
+            await _send_json(self.ws, {
+                "event": "interview_complete",
+                "report_url": f"/report/{self.session_id}",
+            })
+            return
 
         set_voice_field(self.session_id, "state", "WAITING_FOR_CANDIDATE")
         await _send_json(self.ws, {"event": "turn", "speaker": "candidate"})

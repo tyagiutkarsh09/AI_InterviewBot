@@ -1,6 +1,7 @@
 "use client";
 
 import ScoreBadge from "./ScoreBadge";
+import TranscriptTimeline from "./TranscriptTimeline";
 import type { ReportResponse } from "@/types/interview";
 
 const RECOMMENDATION_LABELS: Record<string, { label: string; color: string }> = {
@@ -148,6 +149,10 @@ export default function ReportCard({ report }: ReportCardProps) {
           ))}
         </div>
       </div>
+
+      {report.transcript.length > 0 && (
+        <TranscriptTimeline transcript={report.transcript} />
+      )}
     </div>
   );
 }

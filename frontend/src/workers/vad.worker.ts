@@ -28,9 +28,10 @@ let silenceFrames = 0;
 let ortSession: unknown = null;
 let useEnergyFallback = false;
 
-// Silero VAD hidden states
-let h0 = new Float32Array(2 * 1 * 64);
-let c0 = new Float32Array(2 * 1 * 64);
+// Silero VAD hidden states. Typed as ArrayBufferLike because ONNX Runtime
+// returns tensor data backed by ArrayBufferLike (possibly SharedArrayBuffer).
+let h0: Float32Array<ArrayBufferLike> = new Float32Array(2 * 1 * 64);
+let c0: Float32Array<ArrayBufferLike> = new Float32Array(2 * 1 * 64);
 
 async function loadOnnxModel(): Promise<void> {
   try {
@@ -83,7 +84,7 @@ function computeEnergy(pcm: Float32Array): number {
   return rms > ENERGY_THRESHOLD ? Math.min(rms / ENERGY_THRESHOLD * 0.6, 1) : rms / ENERGY_THRESHOLD * 0.4;
 }
 
-function float32ToInt16(pcm: Float32Array): Int16Array {
+function float32ToInt16(pcm: Float32Array): Int16Array<ArrayBuffer> {
   const out = new Int16Array(pcm.length);
   for (let i = 0; i < pcm.length; i++) {
     const s = Math.max(-1, Math.min(1, pcm[i]));
@@ -130,7 +131,12 @@ async function handleChunk(pcm: Float32Array): Promise<void> {
   // Only forward audio when candidate is actively speaking
   if (state === VAD_STATES.SPEECH || state === VAD_STATES.TRAILING) {
     const int16 = float32ToInt16(pcm);
-    self.postMessage({ event: 'audio_chunk', pcm: int16 }, [int16.buffer]);
+    // `self` is typed as Window under the DOM lib; cast to Worker to reach the
+    // postMessage(message, transfer) overload for zero-copy transfer.
+    (self as unknown as Worker).postMessage(
+      { event: 'audio_chunk', pcm: int16 },
+      [int16.buffer],
+    );
   }
 }
 

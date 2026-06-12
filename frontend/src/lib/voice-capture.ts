@@ -31,8 +31,11 @@ export class VoiceCapture {
   private mediaStream: MediaStream | null = null;
   private workletNode: AudioWorkletNode | null = null;
   private vadWorker: Worker | null = null;
-  private botAudioQueue: ArrayBuffer[] = [];
-  private botAudioSource: AudioBufferSourceNode | null = null;
+  private ttsChunks: ArrayBuffer[] = [];
+  private scheduledSources: AudioBufferSourceNode[] = [];
+  private ttsFlushChain: Promise<void> = Promise.resolve();
+  private nextPlayTime = 0;
+  private audioGen = 0;
   private reconnectCount = 0;
   private stopped = false;
   private currentState: CaptureState = 'idle';
@@ -57,33 +60,80 @@ export class VoiceCapture {
   setBotSpeaking(speaking: boolean): void {
     this._setState(speaking ? 'bot_speaking' : 'idle');
     if (!speaking) {
-      this.botAudioQueue = [];
+      this.stopBotAudio();
     }
   }
 
-  /** Play an incoming TTS audio chunk (MP3 ArrayBuffer). */
-  async playAudioChunk(chunk: ArrayBuffer): Promise<void> {
-    if (!this.audioCtx) return;
+  /**
+   * Buffer one streamed TTS MP3 chunk. Individual streamed MP3 frames are not
+   * independently decodable, so we accumulate them and decode the whole
+   * sentence once the server signals `tts_sentence_complete`.
+   */
+  private _bufferTtsChunk(chunk: ArrayBuffer): void {
+    this.ttsChunks.push(chunk);
+  }
+
+  /**
+   * A sentence finished streaming: snapshot its chunks and queue them for
+   * decode + gapless playback. Snapshotting synchronously (and chaining the
+   * async work) keeps sentences from interleaving or racing on nextPlayTime.
+   */
+  private _onSentenceComplete(): void {
+    if (this.ttsChunks.length === 0) return;
+    const mp3 = this._concatBuffers(this.ttsChunks);
+    this.ttsChunks = [];
+    const gen = this.audioGen;
+    this.ttsFlushChain = this.ttsFlushChain.then(() => this._scheduleMp3(mp3, gen));
+  }
+
+  private async _scheduleMp3(mp3: ArrayBuffer, gen: number): Promise<void> {
+    if (!this.audioCtx || gen !== this.audioGen) return;
+    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+    let decoded: AudioBuffer;
     try {
-      const decoded = await this.audioCtx.decodeAudioData(chunk.slice(0));
-      const source = this.audioCtx.createBufferSource();
-      source.buffer = decoded;
-      source.connect(this.audioCtx.destination);
-      source.start();
-      this.botAudioSource = source;
+      decoded = await this.audioCtx.decodeAudioData(mp3);
     } catch {
-      // Chunk may be a partial MP3 — ignore decode errors for now
+      return; // whole sentence undecodable — skip rather than throw
     }
+    if (gen !== this.audioGen) return; // barge-in happened during decode
+
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = decoded;
+    source.connect(this.audioCtx.destination);
+
+    const startAt = Math.max(this.audioCtx.currentTime, this.nextPlayTime);
+    source.start(startAt);
+    this.nextPlayTime = startAt + decoded.duration;
+
+    this.scheduledSources.push(source);
+    source.onended = () => {
+      this.scheduledSources = this.scheduledSources.filter((s) => s !== source);
+    };
+  }
+
+  private _concatBuffers(buffers: ArrayBuffer[]): ArrayBuffer {
+    const total = buffers.reduce((n, b) => n + b.byteLength, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const b of buffers) {
+      out.set(new Uint8Array(b), offset);
+      offset += b.byteLength;
+    }
+    return out.buffer;
   }
 
   stopBotAudio(): void {
-    try {
-      this.botAudioSource?.stop();
-    } catch {
-      // already stopped
+    this.audioGen++; // invalidate any in-flight decode/schedule
+    for (const source of this.scheduledSources) {
+      try {
+        source.stop();
+      } catch {
+        // already stopped
+      }
     }
-    this.botAudioSource = null;
-    this.botAudioQueue = [];
+    this.scheduledSources = [];
+    this.ttsChunks = [];
+    this.nextPlayTime = 0;
   }
 
   private async _initAudio(): Promise<void> {
@@ -99,6 +149,7 @@ export class VoiceCapture {
     });
 
     this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    await this.audioCtx.resume();
     await this.audioCtx.audioWorklet.addModule('/worklets/resampler.worklet.js');
 
     const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
@@ -133,10 +184,11 @@ export class VoiceCapture {
       } else if (event === 'audio_chunk' && pcm) {
         // Only send during active states — bot_speaking means barge-in
         if (
-          this.currentState === 'speaking' ||
-          this.currentState === 'bot_speaking'
+          (this.currentState === 'speaking' ||
+            this.currentState === 'bot_speaking') &&
+          this.ws?.readyState === WebSocket.OPEN
         ) {
-          this.ws?.send(pcm.buffer);
+          this.ws.send(pcm.buffer);
         }
       }
     };
@@ -158,8 +210,8 @@ export class VoiceCapture {
 
     this.ws.onmessage = (evt: MessageEvent) => {
       if (evt.data instanceof ArrayBuffer) {
-        // Binary = TTS audio chunk
-        this.playAudioChunk(evt.data);
+        // Binary = TTS audio chunk — buffer until the sentence completes
+        this._bufferTtsChunk(evt.data);
       } else if (typeof evt.data === 'string') {
         try {
           const data = JSON.parse(evt.data) as Record<string, unknown>;
@@ -196,7 +248,13 @@ export class VoiceCapture {
     } else if (event === 'ping') {
       this._sendControl({ event: 'pong' });
     } else if (event === 'tts_sentence_complete') {
-      // Individual sentence done — next sentence may follow
+      // Sentence fully streamed — decode and schedule it for playback
+      this._onSentenceComplete();
+    } else if (event === 'interview_complete') {
+      this._setState('idle');
+      this.onControlMessage(data);
+    } else if (event === 'evaluating') {
+      this.onControlMessage(data);
     } else {
       this.onControlMessage(data);
     }

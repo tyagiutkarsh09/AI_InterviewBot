@@ -97,43 +97,106 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
 
 @router.get("/report/{session_id}", response_model=GetReportResponse)
 async def get_report(session_id: str) -> GetReportResponse:
+    # Try text-mode session first (existing behavior)
     session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    if session is not None:
+        if session.state != InterviewState.COMPLETE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Interview is not complete yet. Current state: {session.state.value}",
+            )
 
-    if session.state != InterviewState.COMPLETE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Interview is not complete yet. Current state: {session.state.value}",
+        eval_ = session.evaluation
+        if eval_ is None:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evaluation missing.")
+
+        started = session.started_at
+        ended = session.ended_at
+        duration = None
+        if started and ended:
+            from datetime import datetime
+            duration = int(
+                (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+            )
+
+        return GetReportResponse(
+            session_id=session_id,
+            candidate_name=session.candidate_name,
+            job_role=session.job_role,
+            experience_level=session.experience_level.value,
+            overall_score=eval_.overall_score,
+            recommendation=eval_.recommendation,
+            strengths=eval_.strengths,
+            weaknesses=eval_.weaknesses,
+            summary=eval_.summary,
+            per_question=[qr.model_dump() for qr in eval_.per_question],
+            topic_scores=eval_.topic_scores,
+            transcript=[t.model_dump() for t in session.transcript],
+            started_at=started,
+            ended_at=ended,
+            duration_seconds=duration,
         )
 
-    eval_ = session.evaluation
-    if eval_ is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Evaluation missing.")
+    # Try voice session (Redis evaluation_report field or PG)
+    from src.services.audio.voice_session import get_voice_session
+    voice_data = get_voice_session(session_id)
 
-    started = session.started_at
-    ended = session.ended_at
-    duration = None
-    if started and ended:
-        from datetime import datetime
-        duration = int(
-            (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+    if voice_data is not None:
+        state = voice_data.get("state", "")
+        if state == "EVALUATING":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Interview is being evaluated.",
+            )
+        if state != "COMPLETE":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Interview is not complete yet. Current state: {state}",
+            )
+
+        report_json = voice_data.get("evaluation_report")
+        if report_json:
+            import json as _json
+            from src.models.interview_report import InterviewReport
+            report = InterviewReport.model_validate_json(report_json)
+            return GetReportResponse(
+                session_id=session_id,
+                candidate_name=report.candidate_name,
+                job_role=report.job_role,
+                experience_level=report.experience_level,
+                overall_score=report.analysis.overall_score,
+                recommendation=report.analysis.hiring_recommendation,
+                strengths=report.analysis.strengths,
+                weaknesses=report.analysis.weaknesses,
+                summary=report.analysis.summary,
+                per_question=report.analysis.per_question,
+                topic_scores=report.analysis.topic_scores,
+                transcript=report.transcript,
+                started_at=report.started_at,
+                ended_at=report.ended_at,
+                duration_seconds=report.duration_seconds,
+            )
+
+    # Try PG as last resort
+    from src.models.interview_report import get_report_by_session
+    pg_report = await get_report_by_session(session_id)
+    if pg_report is not None:
+        return GetReportResponse(
+            session_id=session_id,
+            candidate_name=pg_report.candidate_name,
+            job_role=pg_report.job_role,
+            experience_level=pg_report.experience_level,
+            overall_score=pg_report.analysis.overall_score,
+            recommendation=pg_report.analysis.hiring_recommendation,
+            strengths=pg_report.analysis.strengths,
+            weaknesses=pg_report.analysis.weaknesses,
+            summary=pg_report.analysis.summary,
+            per_question=pg_report.analysis.per_question,
+            topic_scores=pg_report.analysis.topic_scores,
+            transcript=pg_report.transcript,
+            started_at=pg_report.started_at,
+            ended_at=pg_report.ended_at,
+            duration_seconds=pg_report.duration_seconds,
         )
 
-    return GetReportResponse(
-        session_id=session_id,
-        candidate_name=session.candidate_name,
-        job_role=session.job_role,
-        experience_level=session.experience_level.value,
-        overall_score=eval_.overall_score,
-        recommendation=eval_.recommendation,
-        strengths=eval_.strengths,
-        weaknesses=eval_.weaknesses,
-        summary=eval_.summary,
-        per_question=[qr.model_dump() for qr in eval_.per_question],
-        topic_scores=eval_.topic_scores,
-        transcript=[t.model_dump() for t in session.transcript],
-        started_at=started,
-        ended_at=ended,
-        duration_seconds=duration,
-    )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
