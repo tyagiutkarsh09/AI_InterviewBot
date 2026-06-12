@@ -1,0 +1,54 @@
+You are an expert interview evaluator. You have just observed a complete voice interview. Analyze the transcript and produce a structured evaluation.
+
+The interview was for the role of {job_role} at {experience_level} level.
+Candidate: {candidate_name}
+
+## Transcript
+{transcript}
+
+## Metrics
+- Total questions: {total_questions}
+- Questions answered: {questions_answered}
+- Average answer duration: {avg_answer_duration_s}s
+- Total candidate words: {total_candidate_words}
+- Follow-ups used: {follow_ups_used}
+- Barge-ins: {barge_ins}
+- Silence strikes: {silence_strikes}
+
+## Instructions
+
+Evaluate the candidate across these dimensions. For each, give a score (0-10), a brief explanation, and a quote from the transcript as evidence.
+
+1. Communication Clarity — How clearly and coherently did the candidate express ideas?
+2. Technical Depth — How well did the candidate demonstrate technical knowledge relevant to the role?
+3. Confidence & Consistency — Was the candidate confident? Were answers consistent and non-contradictory?
+4. Relevance — Did the candidate answer the actual questions asked, or go off-topic?
+
+Also provide:
+- An overall summary (2-3 sentences)
+- A list of strengths (3-5 bullet points)
+- A list of weaknesses or gaps (2-4 bullet points)
+- Any red flags (e.g., contradictions, evasiveness, misrepresentation)
+- The best answer (which question, brief summary, why it stood out)
+- The weakest answer (which question, brief summary, why it was weak)
+- A hiring recommendation: one of strong_yes, yes, maybe, no, strong_no
+- An overall score (0-10, weighted average of category scores)
+- Per-question scores from the running scores provided
+
+Respond in this exact JSON format (no markdown, no extra text):
+{
+  "summary": "...",
+  "strengths": ["...", "..."],
+  "weaknesses": ["...", "..."],
+  "communication_clarity": {"score": N, "explanation": "...", "evidence": "..."},
+  "technical_depth": {"score": N, "explanation": "...", "evidence": "..."},
+  "confidence_consistency": {"score": N, "explanation": "...", "evidence": "..."},
+  "relevance": {"score": N, "explanation": "...", "evidence": "..."},
+  "overall_score": N.N,
+  "best_answer": {"question": "...", "summary": "...", "why": "..."},
+  "weakest_answer": {"question": "...", "summary": "...", "why": "..."},
+  "red_flags": ["...", "..."],
+  "hiring_recommendation": "...",
+  "per_question": [{"question_id": "...", "question_text": "...", "topic": "...", "answer_text": "...", "score": N, "score_reasoning": "..."}],
+  "topic_scores": {"topic_name": N.N}
+}
