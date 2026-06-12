@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import type { VoiceCaptureState, TranscriptEntry } from "@/types/voice-interview";
 
 interface Props {
@@ -23,6 +24,7 @@ const STATE_COLORS: Record<VoiceCaptureState, string> = {
 };
 
 export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
+  const router = useRouter();
   const [captureState, setCaptureState] = useState<VoiceCaptureState>("idle");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [liveText, setLiveText] = useState("");
@@ -97,6 +99,11 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
 
       vc.onControlMessage = (data) => {
         const event = data.event as string;
+        if (event === "interview_complete") {
+          const reportUrl = data.report_url as string;
+          router.push(reportUrl);
+          return;
+        }
         if (event === "interviewer_prompt" || event === "turn") {
           const text = data.text as string | undefined;
           if (text) {
