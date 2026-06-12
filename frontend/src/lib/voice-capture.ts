@@ -88,6 +88,7 @@ export class VoiceCapture {
 
   private async _scheduleMp3(mp3: ArrayBuffer, gen: number): Promise<void> {
     if (!this.audioCtx || gen !== this.audioGen) return;
+    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
     let decoded: AudioBuffer;
     try {
       decoded = await this.audioCtx.decodeAudioData(mp3);
@@ -148,6 +149,7 @@ export class VoiceCapture {
     });
 
     this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    await this.audioCtx.resume();
     await this.audioCtx.audioWorklet.addModule('/worklets/resampler.worklet.js');
 
     const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
@@ -182,10 +184,11 @@ export class VoiceCapture {
       } else if (event === 'audio_chunk' && pcm) {
         // Only send during active states — bot_speaking means barge-in
         if (
-          this.currentState === 'speaking' ||
-          this.currentState === 'bot_speaking'
+          (this.currentState === 'speaking' ||
+            this.currentState === 'bot_speaking') &&
+          this.ws?.readyState === WebSocket.OPEN
         ) {
-          this.ws?.send(pcm.buffer);
+          this.ws.send(pcm.buffer);
         }
       }
     };
