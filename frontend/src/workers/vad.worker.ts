@@ -35,7 +35,8 @@ let c0 = new Float32Array(2 * 1 * 64);
 async function loadOnnxModel(): Promise<void> {
   try {
     // Dynamic import — requires onnxruntime-web installed
-    const ort = await import('onnxruntime-web');
+    // webpackIgnore: skip bundling — WASM package crashes SWC worker; runtime failure triggers energy fallback
+    const ort = await import(/* webpackIgnore: true */ 'onnxruntime-web');
     ort.env.wasm.wasmPaths = '/onnx/';
     ortSession = await ort.InferenceSession.create('/models/silero_vad.onnx', {
       executionProviders: ['wasm'],
@@ -49,7 +50,7 @@ async function runSileroVAD(pcm: Float32Array): Promise<number> {
   if (useEnergyFallback || !ortSession) return computeEnergy(pcm);
 
   try {
-    const ort = await import('onnxruntime-web');
+    const ort = await import(/* webpackIgnore: true */ 'onnxruntime-web');
     const session = ortSession as InstanceType<typeof ort.InferenceSession>;
 
     const inputTensor = new ort.Tensor('float32', pcm, [1, pcm.length]);

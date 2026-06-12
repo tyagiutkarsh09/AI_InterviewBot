@@ -6,10 +6,11 @@ GET  /api/v1/voice/session/{id}   — rehydrate session state (for reconnect)
 """
 
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from jose import jwt
 from pydantic import BaseModel
 
@@ -68,7 +69,7 @@ def _issue_token(session_id: str) -> str:
     response_model=VoiceSessionStartResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def start_voice_session(body: VoiceSessionStartRequest) -> VoiceSessionStartResponse:
+async def start_voice_session(body: VoiceSessionStartRequest, request: Request) -> VoiceSessionStartResponse:
     session_id = str(uuid.uuid4())
 
     questions = get_question_set(
@@ -94,10 +95,13 @@ async def start_voice_session(body: VoiceSessionStartRequest) -> VoiceSessionSta
     )
 
     token = _issue_token(session_id)
-    settings = get_settings()
-    ws_base = "ws://localhost:8000"
-    if settings.environment != "development":
-        ws_base = "wss://api.yourdomain.com"
+    # Derive WS base from the incoming request so the URL always matches the
+    # server the browser is actually talking to. VOICE_WS_BASE overrides for
+    # cases where the public WS hostname differs from the API hostname.
+    ws_base = os.getenv("VOICE_WS_BASE")
+    if not ws_base:
+        scheme = "wss" if request.url.scheme == "https" else "ws"
+        ws_base = f"{scheme}://{request.url.netloc}"
 
     return VoiceSessionStartResponse(
         session_id=session_id,

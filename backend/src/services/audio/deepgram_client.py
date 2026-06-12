@@ -21,6 +21,8 @@ OnTranscriptCallback = Callable[
     Coroutine[Any, Any, None],
 ]
 
+KEEPALIVE_INTERVAL = 8  # seconds — Deepgram times out at ~12s of silence
+
 
 class DeepgramSTTStream:
     def __init__(
@@ -33,6 +35,7 @@ class DeepgramSTTStream:
         self._connection: Optional[Any] = None
         self._connected = False
         self._last_committed: str = ""
+        self._keepalive_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
 
     async def connect(self) -> None:
         settings = get_settings()
@@ -79,6 +82,7 @@ class DeepgramSTTStream:
             return
 
         self._connected = True
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
         logger.info("Deepgram connected for session %s", self.session_id)
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
@@ -87,9 +91,13 @@ class DeepgramSTTStream:
                 await self._connection.send(pcm_bytes)
             except Exception as exc:
                 logger.warning("Deepgram send failed session=%s: %s", self.session_id, exc)
+                self._connected = False
 
     async def close(self) -> None:
         self._connected = False
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
         if self._connection:
             try:
                 await self._connection.finish()
@@ -98,7 +106,24 @@ class DeepgramSTTStream:
             self._connection = None
         logger.info("Deepgram closed for session %s", self.session_id)
 
-    async def _on_transcript(self, result: Any, **_: Any) -> None:
+    async def _keepalive_loop(self) -> None:
+        """Send periodic keepalive to prevent Deepgram from timing out during silence."""
+        try:
+            while self._connected and self._connection:
+                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                if not self._connected or not self._connection:
+                    break
+                try:
+                    await self._connection.keep_alive()
+                except Exception:
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def _on_transcript(self, _self_or_result: Any, result: Any = None, **_: Any) -> None:
+        # SDK v3 passes (self, result, **kwargs) — handle both positional styles
+        if result is None:
+            result = _self_or_result
         try:
             alt = result.channel.alternatives[0]
             text: str = alt.transcript
@@ -111,19 +136,18 @@ class DeepgramSTTStream:
             return
 
         if speech_final:
-            # Deduplicate: discard if identical or prefix of previous committed
             if text == self._last_committed or self._last_committed.startswith(text):
                 return
             self._last_committed = text
             await self.on_transcript(text, is_final=True)
         elif is_final:
-            # Partial committed transcript — update live display only
             await self.on_transcript(text, is_final=False)
 
-    async def _on_error(self, error: Any, **_: Any) -> None:
+    async def _on_error(self, *args: Any, **_: Any) -> None:
+        error = args[0] if args else "unknown"
         logger.error("Deepgram error session=%s: %s", self.session_id, error)
 
-    async def _on_close(self, close: Any, **_: Any) -> None:
+    async def _on_close(self, *args: Any, **_: Any) -> None:
         self._connected = False
         logger.info("Deepgram connection closed session=%s", self.session_id)
 
@@ -147,6 +171,9 @@ class DeepgramManager:
         await self._create_and_connect()
 
     async def send(self, audio: bytes) -> None:
+        if self._stream and not self._stream._connected:
+            logger.info("Deepgram reconnecting on send for session %s", self.session_id)
+            await self._reconnect()
         if self._stream:
             await self._stream.send_audio(audio)
 
@@ -154,6 +181,13 @@ class DeepgramManager:
         if self._stream:
             await self._stream.close()
             self._stream = None
+
+    async def _reconnect(self) -> None:
+        """Tear down dead stream and create a fresh one."""
+        if self._stream:
+            await self._stream.close()
+        self._retry_count = 0
+        await self._create_and_connect()
 
     async def _create_and_connect(self) -> None:
         self._stream = DeepgramSTTStream(
