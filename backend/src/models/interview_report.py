@@ -26,7 +26,7 @@ class InterviewMetrics(BaseModel):
 
 
 class CategoryScore(BaseModel):
-    score: float = Field(ge=0, le=10)
+    score: float = Field(default=0.0, ge=0, le=10)
     explanation: str = ""
     evidence: str = ""
 

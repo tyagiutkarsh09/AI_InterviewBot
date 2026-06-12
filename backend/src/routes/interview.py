@@ -1,4 +1,7 @@
 import logging
+from datetime import datetime
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, status
 from src.types.api import (
     StartInterviewRequest,
@@ -10,6 +13,7 @@ from src.types.api import (
 from src.types.interview import InterviewState, FinalReport
 from src.services.interview import session_manager, turn_manager
 from src.services.llm import llm_service
+from src.models.interview_report import InterviewReport, get_report_by_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -95,6 +99,28 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
     )
 
 
+def _report_response_from_interview_report(
+    session_id: str, report: InterviewReport,
+) -> GetReportResponse:
+    return GetReportResponse(
+        session_id=session_id,
+        candidate_name=report.candidate_name,
+        job_role=report.job_role,
+        experience_level=report.experience_level,
+        overall_score=report.analysis.overall_score,
+        recommendation=report.analysis.hiring_recommendation,
+        strengths=report.analysis.strengths,
+        weaknesses=report.analysis.weaknesses,
+        summary=report.analysis.summary,
+        per_question=report.analysis.per_question,
+        topic_scores=report.analysis.topic_scores,
+        transcript=report.transcript,
+        started_at=report.started_at,
+        ended_at=report.ended_at,
+        duration_seconds=report.duration_seconds,
+    )
+
+
 @router.get("/report/{session_id}", response_model=GetReportResponse)
 async def get_report(session_id: str) -> GetReportResponse:
     # Try text-mode session first (existing behavior)
@@ -112,9 +138,8 @@ async def get_report(session_id: str) -> GetReportResponse:
 
         started = session.started_at
         ended = session.ended_at
-        duration = None
+        duration: Optional[int] = None
         if started and ended:
-            from datetime import datetime
             duration = int(
                 (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
             )
@@ -137,7 +162,7 @@ async def get_report(session_id: str) -> GetReportResponse:
             duration_seconds=duration,
         )
 
-    # Try voice session (Redis evaluation_report field or PG)
+    # Try voice session (Redis evaluation_report field)
     from src.services.audio.voice_session import get_voice_session
     voice_data = get_voice_session(session_id)
 
@@ -156,47 +181,12 @@ async def get_report(session_id: str) -> GetReportResponse:
 
         report_json = voice_data.get("evaluation_report")
         if report_json:
-            import json as _json
-            from src.models.interview_report import InterviewReport
             report = InterviewReport.model_validate_json(report_json)
-            return GetReportResponse(
-                session_id=session_id,
-                candidate_name=report.candidate_name,
-                job_role=report.job_role,
-                experience_level=report.experience_level,
-                overall_score=report.analysis.overall_score,
-                recommendation=report.analysis.hiring_recommendation,
-                strengths=report.analysis.strengths,
-                weaknesses=report.analysis.weaknesses,
-                summary=report.analysis.summary,
-                per_question=report.analysis.per_question,
-                topic_scores=report.analysis.topic_scores,
-                transcript=report.transcript,
-                started_at=report.started_at,
-                ended_at=report.ended_at,
-                duration_seconds=report.duration_seconds,
-            )
+            return _report_response_from_interview_report(session_id, report)
 
     # Try PG as last resort
-    from src.models.interview_report import get_report_by_session
     pg_report = await get_report_by_session(session_id)
     if pg_report is not None:
-        return GetReportResponse(
-            session_id=session_id,
-            candidate_name=pg_report.candidate_name,
-            job_role=pg_report.job_role,
-            experience_level=pg_report.experience_level,
-            overall_score=pg_report.analysis.overall_score,
-            recommendation=pg_report.analysis.hiring_recommendation,
-            strengths=pg_report.analysis.strengths,
-            weaknesses=pg_report.analysis.weaknesses,
-            summary=pg_report.analysis.summary,
-            per_question=pg_report.analysis.per_question,
-            topic_scores=pg_report.analysis.topic_scores,
-            transcript=pg_report.transcript,
-            started_at=pg_report.started_at,
-            ended_at=pg_report.ended_at,
-            duration_seconds=pg_report.duration_seconds,
-        )
+        return _report_response_from_interview_report(session_id, pg_report)
 
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")

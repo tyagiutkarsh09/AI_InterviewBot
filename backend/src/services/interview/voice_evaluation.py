@@ -11,6 +11,7 @@ Voice interview evaluation pipeline.
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,29 @@ def _build_prompt(voice_data: dict[str, Any], metrics: InterviewMetrics) -> str:
     )
 
 
+def _strip_markdown_fences(text: str) -> str:
+    stripped = text.strip()
+    match = re.search(r"```(?:\w*)\s*\n(.*?)```", stripped, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return stripped
+
+
+def _parse_analysis(raw: str) -> InterviewAnalysis:
+    cleaned = _strip_markdown_fences(raw)
+    try:
+        return InterviewAnalysis.model_validate(json.loads(cleaned))
+    except (json.JSONDecodeError, ValueError) as first_err:
+        json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if json_match:
+            try:
+                return InterviewAnalysis.model_validate(json.loads(json_match.group()))
+            except (json.JSONDecodeError, ValueError):
+                pass
+        logger.error("Failed to parse LLM evaluation response: %s", first_err)
+        return InterviewAnalysis(summary="Evaluation parsing failed — raw response stored for review.")
+
+
 async def run_voice_evaluation(session_id: str) -> InterviewReport:
     """
     Full evaluation pipeline. Returns InterviewReport.
@@ -109,15 +133,7 @@ async def run_voice_evaluation(session_id: str) -> InterviewReport:
         messages=[{"role": "user", "content": prompt_text}],
     )
     raw_json = response.content[0].text
-
-    cleaned = raw_json.strip()
-    if cleaned.startswith("```"):
-        first_nl = cleaned.index("\n")
-        last_fence = cleaned.rfind("```")
-        cleaned = cleaned[first_nl + 1:last_fence].strip()
-
-    analysis_data = json.loads(cleaned)
-    analysis = InterviewAnalysis.model_validate(analysis_data)
+    analysis = _parse_analysis(raw_json)
 
     transcript_raw: list[dict] = json.loads(voice_data.get("transcript", "[]"))
     now = datetime.now(timezone.utc).isoformat()
