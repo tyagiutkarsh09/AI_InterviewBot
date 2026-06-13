@@ -8,7 +8,7 @@
  *
  * State machine:
  *   SILENT → (prob > 0.5) → SPEECH → (prob < 0.3) → TRAILING
- *   TRAILING → (silenceFrames >= 40) → SILENT  (800ms silence)
+ *   TRAILING → (silenceFrames >= 75) → SILENT  (1500ms silence)
  *
  * Falls back to energy-based VAD if ONNX runtime is unavailable.
  */
@@ -18,7 +18,7 @@ type VadState = typeof VAD_STATES[keyof typeof VAD_STATES];
 
 const SPEECH_THRESHOLD = 0.5;
 const SILENCE_THRESHOLD = 0.3;
-const SILENCE_FRAMES_THRESHOLD = 40; // 40 × 20ms = 800ms
+const SILENCE_FRAMES_THRESHOLD = 75; // 75 × 20ms = 1500ms
 const ENERGY_THRESHOLD = 0.005;       // fallback energy threshold
 
 let state: VadState = VAD_STATES.SILENT;

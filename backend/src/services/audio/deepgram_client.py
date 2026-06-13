@@ -2,7 +2,7 @@
 Deepgram streaming STT — server-side proxy only.  API key never reaches the browser.
 
 nova-2, 16kHz, linear16, interim_results=True
-endpointing=300, utterance_end_ms=1000, smart_format=True
+endpointing=700, utterance_end_ms=2000, smart_format=True
 
 Partial transcripts → {event:"transcript", is_final:false}
 speech_final=True   → triggers LLM processing
@@ -64,8 +64,8 @@ class DeepgramSTTStream:
             language="en-US",
             smart_format=True,
             interim_results=True,
-            endpointing=300,
-            utterance_end_ms="1000",
+            endpointing=700,
+            utterance_end_ms="2000",
             vad_events=True,
             encoding="linear16",
             sample_rate=16000,
