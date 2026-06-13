@@ -56,6 +56,22 @@ If you think a convention is harmful, surface it. Don't fork it silently.
 
 ---
 
+## Model Selection
+
+Use these models based on task type. These are standing instructions — apply them every time.
+
+| Task | Model | Budget |
+|------|-------|--------|
+| Brainstorming / Planning | `claude-opus-4-6` | high |
+| Writing code | `claude-sonnet-4-6` | high |
+| Writing unit tests | `claude-sonnet-4-6` | xhigh |
+| Code review | `claude-opus-4-6` | high |
+| Simple questions / quick lookups | `claude-sonnet-4-6` | medium |
+
+Switch model via `/model <id>` before starting the relevant task. Don't default to the session model when a task clearly maps to one above.
+
+---
+
 ## Architecture
 
 ### Overview
