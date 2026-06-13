@@ -35,6 +35,7 @@ ALGORITHM = "HS256"
 
 STT_LOW_CONFIDENCE = 0.65   # below this: ask candidate to repeat
 STT_MID_CONFIDENCE = 0.80   # below this: soft-confirm before processing
+MAX_REPEAT_REQUESTS = 3     # after this many consecutive low-confidence events, process anyway
 
 
 def _validate_token(token: str, session_id: str) -> dict[str, Any]:
@@ -101,6 +102,8 @@ async def voice_interview_ws(
     stop_event = asyncio.Event()
     accumulated_text: list[str] = []
     debounce_task: list[Optional[asyncio.Task]] = [None]  # list for mutability in closure
+    soft_confirm_pending: list[bool] = [False]
+    repeat_request_count: list[int] = [0]
 
     async def on_transcript(text: str, is_final: bool, confidence: float = 1.0) -> None:
         """Called by Deepgram on every transcript event."""
@@ -123,16 +126,30 @@ async def voice_interview_ws(
         })
 
         if is_final:
-            if confidence < STT_LOW_CONFIDENCE:
-                increment_voice_field(session_id, "low_confidence_retries")
-                await _stream_bot_message(
-                    websocket, session_id,
-                    "I'm sorry, I didn't catch that clearly. Could you please repeat your answer?",
-                    "repeat_request",
-                )
-                return
-
-            if confidence < STT_MID_CONFIDENCE:
+            if soft_confirm_pending[0]:
+                # Candidate responded after a soft-confirm — accept regardless of confidence
+                soft_confirm_pending[0] = False
+                repeat_request_count[0] = 0
+            elif confidence < STT_LOW_CONFIDENCE:
+                if repeat_request_count[0] >= MAX_REPEAT_REQUESTS:
+                    # Give up retrying — process with what was transcribed
+                    logger.warning(
+                        "Max repeat requests reached session=%s — processing low-confidence transcript",
+                        session_id,
+                    )
+                    repeat_request_count[0] = 0
+                    # Fall through to accumulate+debounce
+                else:
+                    repeat_request_count[0] += 1
+                    increment_voice_field(session_id, "low_confidence_retries")
+                    await _stream_bot_message(
+                        websocket, session_id,
+                        "I'm sorry, I didn't catch that clearly. Could you please repeat your answer?",
+                        "repeat_request",
+                    )
+                    return
+            elif confidence < STT_MID_CONFIDENCE:
+                soft_confirm_pending[0] = True
                 increment_voice_field(session_id, "soft_confirm_count")
                 await _stream_bot_message(
                     websocket, session_id,
@@ -140,6 +157,8 @@ async def voice_interview_ws(
                     "soft_confirm",
                 )
                 return
+            else:
+                repeat_request_count[0] = 0
 
             accumulated_text.append(text)
 
@@ -265,6 +284,5 @@ async def _stream_bot_message(
 ) -> None:
     """Stream a bot message through TTS without an LLM call (used for repeat/soft-confirm)."""
     from src.services.interview.voice_turn_processor import get_or_create_turn_state
-    append_transcript_turn(session_id, "bot", text, entry_type=entry_type)
     turn_state = get_or_create_turn_state(session_id, ws)
-    await turn_state.stream_response(text)
+    await turn_state.stream_response(text, entry_type=entry_type)

@@ -62,7 +62,7 @@ class VoiceTurnState:
         increment_voice_field(self.session_id, "barge_in_count")
         logger.info("Barge-in detected session=%s", self.session_id)
 
-    async def stream_response(self, text: str) -> None:
+    async def stream_response(self, text: str, entry_type: str = "response") -> None:
         """Stream LLM response through TTS sentence by sentence."""
         sentences = split_into_sentences(text)
         if not sentences:
@@ -71,7 +71,7 @@ class VoiceTurnState:
         self.bot_speaking = True
         set_voice_field(self.session_id, "state", "BOT_SPEAKING")
         await _send_json(self.ws, {"event": "turn", "speaker": "bot", "type": "response"})
-        append_transcript_turn(self.session_id, "bot", text, entry_type="response")
+        append_transcript_turn(self.session_id, "bot", text, entry_type=entry_type)
 
         async def _play() -> None:
             # Stream sentences strictly one at a time. Streaming them
