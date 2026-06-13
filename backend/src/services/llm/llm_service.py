@@ -9,7 +9,7 @@ from src.services.llm.prompt_builder import (
     build_answer_evaluation_prompt,
     build_final_evaluation_prompt,
 )
-from src.services.llm.response_parser import parse_xml_response
+from src.services.llm.response_parser import parse_xml_response, validate_single_question
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,12 @@ async def evaluate_answer(
         )
         raw_text = response.content[0].text
         parsed = parse_xml_response(raw_text)
+        safe_spoken_text = validate_single_question(
+            parsed.spoken_text or _fallback_acknowledgement(parsed.score)
+        )
 
         return EvaluationResult(
-            spoken_text=parsed.spoken_text or _fallback_acknowledgement(parsed.score),
+            spoken_text=safe_spoken_text,
             score=parsed.score,
             reasoning=parsed.reasoning,
             flags=parsed.flags,

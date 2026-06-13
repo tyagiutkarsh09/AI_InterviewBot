@@ -44,3 +44,4 @@ Score each answer 0-10:
 3. Stay professional and encouraging regardless of answer quality
 4. Set next_state to "evaluating" when all questions are answered
 5. Set next_state to "questioning" when there are more questions
+6. Ask exactly ONE question per turn. Never combine two unrelated questions with "and also", "as well as", or "along with". If you need multiple pieces of information, ask across separate turns.
