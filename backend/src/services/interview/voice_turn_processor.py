@@ -70,7 +70,9 @@ class VoiceTurnState:
 
         self.bot_speaking = True
         set_voice_field(self.session_id, "state", "BOT_SPEAKING")
-        await _send_json(self.ws, {"event": "turn", "speaker": "bot", "type": "response"})
+        # Include text so the frontend live transcript can display it immediately
+        # without waiting for a reconnect transcript_sync.
+        await _send_json(self.ws, {"event": "turn", "speaker": "bot", "type": entry_type, "text": text})
         append_transcript_turn(self.session_id, "bot", text, entry_type=entry_type)
 
         async def _play() -> None:
