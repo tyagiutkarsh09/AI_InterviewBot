@@ -199,6 +199,19 @@ async def voice_interview_ws(
             "transcript": transcript_raw,
         })
 
+    # Deliver first question via TTS on initial connect
+    if session.get("state") == "WAITING_FOR_CANDIDATE":
+        first_q_entries = [
+            t for t in transcript_raw
+            if t.get("speaker") == "bot" and t.get("type") == "question"
+        ]
+        if first_q_entries:
+            from src.services.interview.voice_turn_processor import get_or_create_turn_state
+            turn_state = get_or_create_turn_state(session_id, websocket)
+            await turn_state.stream_response(
+                first_q_entries[0]["text"], entry_type="question",
+            )
+
     try:
         while True:
             message = await websocket.receive()

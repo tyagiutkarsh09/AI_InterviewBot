@@ -84,7 +84,11 @@ _db: Optional[aiosqlite.Connection] = None
 async def _get_db() -> Optional[aiosqlite.Connection]:
     global _db
     if _db is not None:
-        return _db
+        try:
+            await _db.execute("SELECT 1")
+            return _db
+        except Exception:
+            _db = None
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         _db = await aiosqlite.connect(DB_PATH)

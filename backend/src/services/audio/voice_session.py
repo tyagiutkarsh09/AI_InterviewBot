@@ -61,8 +61,25 @@ def create_voice_session(
     questions_json: str = "[]",
 ) -> dict[str, Any]:
     """Create initial voice session hash in Redis."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    questions = json.loads(questions_json)
+    transcript: list[dict[str, str]] = []
+    initial_state = "INITIALIZING"
+
+    if questions:
+        first_q_text = questions[0].get("question_text", "")
+        if first_q_text:
+            transcript.append({
+                "speaker": "bot",
+                "text": first_q_text,
+                "timestamp": now,
+                "type": "question",
+            })
+            initial_state = "WAITING_FOR_CANDIDATE"
+
     data: dict[str, Any] = {
-        "state": "INITIALIZING",
+        "state": initial_state,
         "candidate_name": candidate_name,
         "job_role": job_role,
         "experience_level": experience_level,
@@ -71,7 +88,8 @@ def create_voice_session(
         "current_question_idx": 0,
         "follow_up_count": 0,
         "running_scores": json.dumps({}),
-        "transcript": json.dumps([]),
+        "transcript": json.dumps(transcript),
+        "started_at": now,
         "turn_count": 0,
         "barge_in_count": 0,
         "silence_strikes": 0,

@@ -70,7 +70,7 @@ def _compute_metrics(voice_data: dict[str, Any]) -> InterviewMetrics:
     total_candidate_words = sum(len(t.get("text", "").split()) for t in candidate_turns)
     total_bot_words = sum(len(t.get("text", "").split()) for t in bot_turns)
 
-    questions_answered = len(candidate_turns)
+    questions_answered = min(len(candidate_turns), len(questions))
     avg_duration = 0.0
 
     per_topic_conf = _compute_per_topic_confidence(voice_data)

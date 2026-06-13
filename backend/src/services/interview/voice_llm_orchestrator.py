@@ -12,6 +12,7 @@ speech_final → Redis session → LLM → parse XML → update Redis → return
 Scores written to Redis immediately; session end hands off to existing evaluation pipeline.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -101,8 +102,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
     current_idx = int(voice_data.get("current_question_idx", 0))
 
     if current_idx >= len(questions):
-        # All questions done — trigger final evaluation
-        await _trigger_final_evaluation(session_id, voice_data)
+        asyncio.create_task(_trigger_final_evaluation(session_id, voice_data))
         return COMPLETION_MESSAGE
 
     current_q = questions[current_idx]
@@ -166,7 +166,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            await _trigger_final_evaluation(session_id, voice_data)
+            asyncio.create_task(_trigger_final_evaluation(session_id, voice_data))
             spoken = parsed.spoken_text or "Great."
             return f"{spoken} {COMPLETION_MESSAGE}"
 
@@ -194,7 +194,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            await _trigger_final_evaluation(session_id, voice_data)
+            asyncio.create_task(_trigger_final_evaluation(session_id, voice_data))
             return COMPLETION_MESSAGE
 
         next_q = questions[next_idx]
