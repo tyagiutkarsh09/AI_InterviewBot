@@ -238,12 +238,14 @@ class TestSubmitWarmupAnswer:
         assert resp.question_number == 1
 
     @pytest.mark.asyncio
-    async def test_is_warmup_flag_on_transition(self, redis_patch):
+    async def test_is_warmup_false_after_transition(self, redis_patch):
+        """Once warmup is consumed, is_warmup should be False — the response
+        carries the first technical question, not a warmup."""
         from src.routes.interview import submit_answer
         session_id = await self._start()
         ans_req = SubmitAnswerRequest(session_id=session_id, answer="Good day!")
         resp = await submit_answer(ans_req)
-        assert resp.is_warmup is True
+        assert resp.is_warmup is False
 
     @pytest.mark.asyncio
     async def test_no_score_for_warmup_answer(self, redis_patch):

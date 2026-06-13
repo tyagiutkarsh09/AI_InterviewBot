@@ -89,7 +89,6 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
             question_number=1,
             total_questions=len(session.questions),
             topic=first_q.topic,
-            is_warmup=True,
             is_complete=False,
         )
 
