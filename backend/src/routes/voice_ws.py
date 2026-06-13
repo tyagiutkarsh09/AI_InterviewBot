@@ -33,9 +33,55 @@ router = APIRouter(tags=["voice"])
 HEARTBEAT_INTERVAL = 30
 ALGORITHM = "HS256"
 
-STT_LOW_CONFIDENCE = 0.65   # below this: ask candidate to repeat
-STT_MID_CONFIDENCE = 0.80   # below this: soft-confirm before processing
-MAX_REPEAT_REQUESTS = 3     # after this many consecutive low-confidence events, process anyway
+STT_LOW_CONFIDENCE = 0.50   # below this: ask candidate to repeat
+STT_MID_CONFIDENCE = 0.70   # below this: soft-confirm before processing
+MAX_REPEAT_REQUESTS = 1     # after this many consecutive low-confidence events, process anyway
+
+DEBOUNCE_SECS = 3.0          # seconds to wait after last speech_final before flushing to LLM
+DEBOUNCE_COMPLETE_SECS = 0.8 # shortened debounce when user signals answer completion
+DEBOUNCE_INCOMPLETE_SECS = 5.0  # extended debounce when transcript ends mid-thought
+
+_COMPLETION_PHRASES = (
+    "that's my answer",
+    "that's all",
+    "that's it",
+    "that's about it",
+    "i think that covers it",
+    "i don't have anything else",
+    "i don't have anything more",
+    "nothing else to add",
+    "that's everything",
+    "i'm done",
+    "that would be all",
+    "yeah that's it",
+    "yes that's it",
+    "i guess that's it",
+    "i believe that's it",
+    "that's all i can think of",
+    "that's all i have",
+    "that is what i think",
+    "sorry i may not know",
+    "i may not know",
+)
+
+_INCOMPLETE_TRAILING = (
+    " and", " but", " or", " so", " because", " since", " although",
+    " however", " therefore", " which", " that", " when", " where",
+    " while", " if", " as", " with", " for", " to", " of", " the",
+    " a", " an", " like", " such", " also", " then",
+)
+
+
+def _looks_complete(text: str) -> bool:
+    """Rule-based: does the transcript end with an explicit completion phrase?"""
+    lower = text.lower().strip()
+    return any(lower.endswith(phrase) or phrase in lower[-60:] for phrase in _COMPLETION_PHRASES)
+
+
+def _looks_incomplete(text: str) -> bool:
+    """Rule-based: does the transcript trail off with a conjunction/preposition/article?"""
+    lower = text.lower().rstrip(" .,;:")
+    return any(lower.endswith(trail) for trail in _INCOMPLETE_TRAILING)
 
 
 def _validate_token(token: str, session_id: str) -> dict[str, Any]:
@@ -166,8 +212,17 @@ async def voice_interview_ws(
             if debounce_task[0] is not None and not debounce_task[0].done():
                 debounce_task[0].cancel()
 
-            async def _flush_accumulated() -> None:
-                await asyncio.sleep(1.5)  # 1.5s debounce window
+            # Adaptive debounce: fast for completion phrases, slow for incomplete trailing
+            current_text = " ".join(accumulated_text)
+            if _looks_complete(current_text):
+                flush_delay = DEBOUNCE_COMPLETE_SECS
+            elif _looks_incomplete(current_text):
+                flush_delay = DEBOUNCE_INCOMPLETE_SECS
+            else:
+                flush_delay = DEBOUNCE_SECS
+
+            async def _flush_accumulated(delay: float = flush_delay) -> None:
+                await asyncio.sleep(delay)
                 if not accumulated_text:
                     return
                 full_text = " ".join(accumulated_text)
@@ -228,7 +283,7 @@ async def voice_interview_ws(
                         "message": "Invalid JSON in control frame",
                     })
                     continue
-                await _handle_control(websocket, session_id, data)
+                await _handle_control(websocket, session_id, data, debounce_task)
 
     except WebSocketDisconnect:
         logger.info("Voice WS disconnected session=%s", session_id)
@@ -246,7 +301,10 @@ async def voice_interview_ws(
 
 
 async def _handle_control(
-    ws: WebSocket, session_id: str, data: dict[str, Any]
+    ws: WebSocket,
+    session_id: str,
+    data: dict[str, Any],
+    debounce_task: list[Optional[asyncio.Task]] = None,  # type: ignore[type-arg]
 ) -> None:
     event = data.get("event", "")
 
@@ -255,10 +313,17 @@ async def _handle_control(
 
     elif event == "speech_start":
         set_voice_field(session_id, "state", "CANDIDATE_SPEAKING")
+        # Cancel debounce: user resumed speaking, don't flush yet
+        if debounce_task and debounce_task[0] is not None and not debounce_task[0].done():
+            debounce_task[0].cancel()
+        # Cancel silence monitor: user is actively speaking
+        from src.services.interview.voice_turn_processor import get_or_create_turn_state
+        turn_state = get_or_create_turn_state(session_id, ws)
+        turn_state.cancel_silence_monitor()
         await _send_json(ws, {"event": "ack", "for": "speech_start"})
 
     elif event == "speech_end":
-        set_voice_field(session_id, "state", "PROCESSING")
+        # Don't set PROCESSING — let the debounce timer decide when processing starts.
         await _send_json(ws, {"event": "ack", "for": "speech_end"})
 
     elif event == "tts_complete":
