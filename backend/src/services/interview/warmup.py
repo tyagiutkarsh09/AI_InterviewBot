@@ -28,3 +28,11 @@ def generate_warmup_followup(candidate_name: str, job_role: str) -> str:
 
 def generate_transition_message(candidate_name: str) -> str:
     return f"Thanks for sharing that, {candidate_name}! Now let's get into the technical questions."
+
+
+def generate_introduction(candidate_name: str, job_role: str, total_questions: int) -> str:
+    return (
+        f"Hi {candidate_name}! I'm your AI interviewer today. "
+        f"We have a {job_role} session lined up — {total_questions} technical questions "
+        f"after a quick warm-up."
+    )

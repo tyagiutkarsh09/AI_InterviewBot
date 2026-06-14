@@ -12,7 +12,7 @@ from src.types.api import (
 )
 from src.types.interview import InterviewState, FinalReport
 from src.services.interview import session_manager, turn_manager
-from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup, generate_transition_message
+from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup, generate_transition_message, generate_introduction
 from src.services.llm import llm_service
 from src.models.interview_report import (
     InterviewReport,
@@ -42,14 +42,16 @@ async def start_interview(body: StartInterviewRequest) -> StartInterviewResponse
         )
 
     session.state = InterviewState.WARMUP
+    intro = generate_introduction(session.candidate_name, session.job_role, len(session.questions))
     warmup_text = generate_warmup_question(session.candidate_name, session.job_role)
+    opening = f"{intro} {warmup_text}"
     session_manager.update_session(session)
-    session_manager.record_turn(session, speaker="bot", text=warmup_text)
+    session_manager.record_turn(session, speaker="bot", text=opening)
 
     return StartInterviewResponse(
         session_id=session.session_id,
         state=session.state,
-        question_text=warmup_text,
+        question_text=opening,
         question_number=0,
         total_questions=len(session.questions),
         topic="warmup",

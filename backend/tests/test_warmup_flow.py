@@ -178,6 +178,53 @@ class TestStartInterview:
         assert "Utkarsh" in resp.question_text
 
     @pytest.mark.asyncio
+    async def test_opening_identifies_as_ai_interviewer(self, redis_patch):
+        """Bot must identify itself as an AI interviewer on the first turn.
+
+        WHY: Candidates have a right to know they are being interviewed by AI
+             (transparency). Disclosing upfront avoids a jarring reveal later.
+        """
+        from src.routes.interview import start_interview
+        req = StartInterviewRequest(
+            candidate_name="Utkarsh",
+            job_role="backend engineer",
+            experience_level=ExperienceLevel.MID,
+            required_skills=["python"],
+        )
+        resp = await start_interview(req)
+        assert "AI interviewer" in resp.question_text
+
+    @pytest.mark.asyncio
+    async def test_opening_mentions_total_questions(self, redis_patch):
+        """Bot must disclose the number of technical questions at the start.
+
+        WHY: Format disclosure reduces anxiety — candidates pace themselves better
+             when they know how many questions are coming.
+        """
+        from src.routes.interview import start_interview
+        req = StartInterviewRequest(
+            candidate_name="Utkarsh",
+            job_role="backend engineer",
+            experience_level=ExperienceLevel.MID,
+            required_skills=["python"],
+        )
+        resp = await start_interview(req)
+        assert str(len(_FAKE_QUESTIONS)) in resp.question_text
+
+    @pytest.mark.asyncio
+    async def test_opening_mentions_job_role(self, redis_patch):
+        """Bot must mention the job role so the candidate knows what is being evaluated."""
+        from src.routes.interview import start_interview
+        req = StartInterviewRequest(
+            candidate_name="Utkarsh",
+            job_role="backend engineer",
+            experience_level=ExperienceLevel.MID,
+            required_skills=["python"],
+        )
+        resp = await start_interview(req)
+        assert "backend engineer" in resp.question_text
+
+    @pytest.mark.asyncio
     async def test_warmup_question_is_not_technical(self, redis_patch):
         from src.routes.interview import start_interview
         results: list[str] = []
