@@ -24,3 +24,7 @@ def generate_warmup_question(candidate_name: str, job_role: str) -> str:
 def generate_warmup_followup(candidate_name: str, job_role: str) -> str:
     template = random.choice(_FOLLOWUP_TEMPLATES)
     return template(candidate_name, job_role)
+
+
+def generate_transition_message(candidate_name: str) -> str:
+    return f"Thanks for sharing that, {candidate_name}! Now let's get into the technical questions."

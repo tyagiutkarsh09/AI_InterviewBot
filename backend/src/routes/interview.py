@@ -12,7 +12,7 @@ from src.types.api import (
 )
 from src.types.interview import InterviewState, FinalReport
 from src.services.interview import session_manager, turn_manager
-from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup
+from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup, generate_transition_message
 from src.services.llm import llm_service
 from src.models.interview_report import (
     InterviewReport,
@@ -97,12 +97,14 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
 
         session.state = InterviewState.QUESTIONING
         first_q = session.questions[0]
+        transition = generate_transition_message(session.candidate_name)
+        combined_text = f"{transition} {first_q.question_text}"
         session_manager.update_session(session)
-        session_manager.record_turn(session, speaker="bot", text=first_q.question_text, question_id=first_q.id)
+        session_manager.record_turn(session, speaker="bot", text=combined_text, question_id=first_q.id)
         return SubmitAnswerResponse(
             session_id=body.session_id,
             state=InterviewState.QUESTIONING,
-            next_question=first_q.question_text,
+            next_question=combined_text,
             question_number=1,
             total_questions=len(session.questions),
             topic=first_q.topic,

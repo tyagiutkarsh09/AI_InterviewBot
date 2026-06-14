@@ -284,10 +284,33 @@ class TestSubmitWarmupAnswer:
 
     @pytest.mark.asyncio
     async def test_returns_first_technical_question(self, redis_patch):
+        """Technical question text must be present in the response.
+
+        next_question now includes a warm transition prefix so we check
+        containment rather than exact equality.
+        """
         session_id = await self._start()
         await self._submit(session_id, "Doing well!")
         resp = await self._submit(session_id, "I worked at Acme Corp last.")
-        assert resp.next_question == _FAKE_QUESTIONS[0].question_text
+        assert _FAKE_QUESTIONS[0].question_text in resp.next_question
+
+    @pytest.mark.asyncio
+    async def test_transition_message_present(self, redis_patch):
+        """A warm transition sentence must appear before the first technical question.
+
+        WHY: Without an explicit mode-change signal the shift from social to
+             technical feels abrupt — candidates don't know the tone is about to change.
+        """
+        from src.services.interview.warmup import generate_transition_message
+        session_id = await self._start()
+        await self._submit(session_id, "Doing well!")
+        resp = await self._submit(session_id, "I worked at Acme Corp last.")
+        expected_transition = generate_transition_message("Utkarsh")
+        assert expected_transition in resp.next_question, (
+            f"Transition message not found in response.\n"
+            f"  Expected prefix: {expected_transition!r}\n"
+            f"  Actual next_question: {resp.next_question!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_question_number_becomes_one(self, redis_patch):
@@ -333,8 +356,8 @@ class TestSubmitWarmupAnswer:
         assert transcript[2].speaker == "bot"        # follow-up warmup question
         assert transcript[3].speaker == "candidate"
         assert transcript[3].text == "I was at Acme Corp."
-        assert transcript[4].speaker == "bot"        # first technical question
-        assert transcript[4].text == _FAKE_QUESTIONS[0].question_text
+        assert transcript[4].speaker == "bot"        # transition + first technical question
+        assert _FAKE_QUESTIONS[0].question_text in transcript[4].text
 
     # ------------------------------------------------------------------
     # Normal flow after warmup
