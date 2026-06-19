@@ -4,7 +4,12 @@ _TRANSITIONS: dict[InterviewState, set[InterviewState]] = {
     InterviewState.IDLE: {InterviewState.STARTED},
     InterviewState.STARTED: {InterviewState.WARMUP, InterviewState.QUESTIONING},
     InterviewState.WARMUP: {InterviewState.QUESTIONING},
-    InterviewState.QUESTIONING: {InterviewState.QUESTIONING, InterviewState.EVALUATING},
+    InterviewState.QUESTIONING: {
+        InterviewState.QUESTIONING,
+        InterviewState.WRAP_UP,
+        InterviewState.EVALUATING,
+    },
+    InterviewState.WRAP_UP: {InterviewState.WRAP_UP, InterviewState.EVALUATING},
     InterviewState.EVALUATING: {InterviewState.COMPLETE},
     InterviewState.COMPLETE: set(),
 }

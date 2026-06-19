@@ -9,6 +9,7 @@ class InterviewState(str, Enum):
     STARTED = "started"
     WARMUP = "warmup"
     QUESTIONING = "questioning"
+    WRAP_UP = "wrap_up"
     EVALUATING = "evaluating"
     COMPLETE = "complete"
 
