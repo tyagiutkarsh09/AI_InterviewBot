@@ -1,4 +1,10 @@
-import type { InterviewListResponse, InterviewDetail } from "@/types/admin";
+import type {
+  InterviewListResponse,
+  InterviewDetail,
+  CreateConfigRequest,
+  ConfigResponse,
+  ConfigListResponse,
+} from "@/types/admin";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? "change-me-admin-key";
@@ -14,12 +20,17 @@ class AdminApiError extends Error {
   }
 }
 
-async function adminRequest<T>(path: string): Promise<T> {
+async function adminRequest<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
+    ...options,
     headers: {
       "Content-Type": "application/json",
       "X-Admin-Key": ADMIN_KEY,
+      ...options.headers,
     },
   });
 
@@ -52,6 +63,19 @@ export async function getInterviewDetail(
   return adminRequest<InterviewDetail>(
     `/api/v1/admin/interviews/${sessionId}`
   );
+}
+
+export async function createConfig(
+  body: CreateConfigRequest
+): Promise<ConfigResponse> {
+  return adminRequest<ConfigResponse>("/api/v1/admin/configs", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listConfigs(): Promise<ConfigListResponse> {
+  return adminRequest<ConfigListResponse>("/api/v1/admin/configs");
 }
 
 export { AdminApiError };

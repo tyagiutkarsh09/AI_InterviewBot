@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { startInterview, ApiClientError } from "@/services/api";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { startInterview, startFromConfig, ApiClientError } from "@/services/api";
 import type { ExperienceLevel } from "@/types/interview";
 
 const ROLES = [
@@ -23,8 +23,10 @@ const LEVELS: { value: ExperienceLevel; label: string; description: string }[] =
     { value: "staff", label: "Staff", description: "8+ years" },
   ];
 
-export default function StartInterviewPage() {
+function StartInterviewForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const configId = searchParams.get("configId");
   const [candidateName, setCandidateName] = useState("");
   const [jobRole, setJobRole] = useState(ROLES[2]);
   const [customRole, setCustomRole] = useState("");
@@ -38,7 +40,8 @@ export default function StartInterviewPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!effectiveRole) {
+    // Role is governed by the config when starting from a preset.
+    if (!configId && !effectiveRole) {
       setError("Please specify a job role.");
       return;
     }
@@ -51,12 +54,18 @@ export default function StartInterviewPage() {
       .filter(Boolean);
 
     try {
-      const res = await startInterview({
-        candidate_name: candidateName.trim() || "Candidate",
-        job_role: effectiveRole,
-        experience_level: experienceLevel,
-        required_skills: skills,
-      });
+      const res = configId
+        ? await startFromConfig({
+            interview_config_id: configId,
+            candidate_name: candidateName.trim() || "Candidate",
+            resume_details: skills.length ? { skills } : undefined,
+          })
+        : await startInterview({
+            candidate_name: candidateName.trim() || "Candidate",
+            job_role: effectiveRole,
+            experience_level: experienceLevel,
+            required_skills: skills,
+          });
       sessionStorage.setItem(`interview_session_${res.session_id}`, JSON.stringify(res));
       router.push(`/interview/${res.session_id}`);
     } catch (err) {
@@ -78,6 +87,13 @@ export default function StartInterviewPage() {
         Fill in your details and we&apos;ll select the right questions for you.
       </p>
 
+      {configId && (
+        <div className="bg-blue-50 border border-blue-200 text-blue-700 rounded-lg px-4 py-3 text-sm mb-6">
+          Starting from a preset interview configuration. The role and questions are
+          already set — just enter your name to begin.
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-6">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -92,6 +108,8 @@ export default function StartInterviewPage() {
           />
         </div>
 
+        {!configId && (
+        <>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
             Job Role
@@ -141,6 +159,8 @@ export default function StartInterviewPage() {
             ))}
           </div>
         </div>
+        </>
+        )}
 
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -172,5 +192,17 @@ export default function StartInterviewPage() {
         </button>
       </form>
     </div>
+  );
+}
+
+export default function StartInterviewPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="max-w-xl mx-auto text-slate-500 text-sm">Loading…</div>
+      }
+    >
+      <StartInterviewForm />
+    </Suspense>
   );
 }

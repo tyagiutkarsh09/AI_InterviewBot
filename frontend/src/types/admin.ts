@@ -19,6 +19,30 @@ export interface InterviewListResponse {
   limit: number;
 }
 
+export interface CreateConfigRequest {
+  title: string;
+  role: string;
+  experience_level: "junior" | "mid" | "senior" | "staff";
+  job_description: string;
+  total_questions: number;
+  core_question_ratio: number;
+}
+
+export interface ConfigResponse {
+  id: string;
+  title: string;
+  role: string;
+  experience_level: string;
+  total_questions: number;
+  core_question_ratio: number;
+  created_at?: string | null;
+}
+
+export interface ConfigListResponse {
+  configs: ConfigResponse[];
+  total: number;
+}
+
 export interface CategoryScore {
   score: number;
   explanation: string;

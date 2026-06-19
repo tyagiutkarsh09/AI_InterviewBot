@@ -1,6 +1,7 @@
 import type {
   StartInterviewRequest,
   StartInterviewResponse,
+  StartFromConfigRequest,
   SubmitAnswerRequest,
   SubmitAnswerResponse,
   ReportResponse,
@@ -54,6 +55,15 @@ export async function startInterview(
   body: StartInterviewRequest
 ): Promise<StartInterviewResponse> {
   return request<StartInterviewResponse>("/api/v1/interview/start", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function startFromConfig(
+  body: StartFromConfigRequest
+): Promise<StartInterviewResponse> {
+  return request<StartInterviewResponse>("/api/v1/interview/start-from-config", {
     method: "POST",
     body: JSON.stringify(body),
   });

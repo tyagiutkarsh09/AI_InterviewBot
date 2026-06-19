@@ -1,7 +1,9 @@
 export type InterviewState =
   | "idle"
   | "started"
+  | "warmup"
   | "questioning"
+  | "wrap_up"
   | "evaluating"
   | "complete";
 
@@ -22,6 +24,13 @@ export interface StartInterviewResponse {
   total_questions: number;
   topic: string;
   candidate_name: string;
+  is_warmup?: boolean;
+}
+
+export interface StartFromConfigRequest {
+  interview_config_id: string;
+  candidate_name: string;
+  resume_details?: Record<string, unknown> | null;
 }
 
 export interface SubmitAnswerRequest {
