@@ -6,13 +6,16 @@ from fastapi import APIRouter, HTTPException, status
 from src.types.api import (
     StartInterviewRequest,
     StartInterviewResponse,
+    StartFromConfigRequest,
     SubmitAnswerRequest,
     SubmitAnswerResponse,
     GetReportResponse,
 )
 from src.types.interview import InterviewState, FinalReport
 from src.services.interview import session_manager, turn_manager
-from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup, generate_transition_message, generate_introduction
+from src.services.interview.warmup import generate_warmup_question, generate_warmup_followup, generate_transition_message, generate_introduction, personalize_warmup
+from src.services.interview.outro import answer_candidate_question, MAX_OUTRO_QUESTIONS, RECRUITER_FALLBACK
+from src.models.interview_config import get_config
 from src.services.llm import llm_service
 from src.models.interview_report import (
     InterviewReport,
@@ -60,6 +63,43 @@ async def start_interview(body: StartInterviewRequest) -> StartInterviewResponse
     )
 
 
+@router.post("/start-from-config", response_model=StartInterviewResponse, status_code=status.HTTP_201_CREATED)
+async def start_from_config(body: StartFromConfigRequest) -> StartInterviewResponse:
+    config = await get_config(body.interview_config_id)
+    if config is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview config not found.")
+
+    session = session_manager.create_session_from_config(
+        config=config,
+        candidate_name=body.candidate_name,
+        resume_details=body.resume_details,
+    )
+
+    if not session.questions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Config has no questions in its plan.",
+        )
+
+    session.state = InterviewState.WARMUP
+    intro = generate_introduction(session.candidate_name, session.job_role, len(session.questions))
+    warmup_text = personalize_warmup(session.candidate_name, session.job_role, session.resume_details)
+    opening = f"{intro} {warmup_text}"
+    session_manager.update_session(session)
+    session_manager.record_turn(session, speaker="bot", text=opening)
+
+    return StartInterviewResponse(
+        session_id=session.session_id,
+        state=session.state,
+        question_text=opening,
+        question_number=0,
+        total_questions=len(session.questions),
+        topic="warmup",
+        candidate_name=session.candidate_name,
+        is_warmup=True,
+    )
+
+
 @router.post("/answer", response_model=SubmitAnswerResponse)
 async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
     session = session_manager.get_session(body.session_id)
@@ -72,7 +112,12 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
     if session.state == InterviewState.EVALUATING:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Interview is being evaluated.")
 
-    if session.state not in (InterviewState.QUESTIONING, InterviewState.STARTED, InterviewState.WARMUP):
+    if session.state not in (
+        InterviewState.QUESTIONING,
+        InterviewState.STARTED,
+        InterviewState.WARMUP,
+        InterviewState.WRAP_UP,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot submit answer in state: {session.state.value}",
@@ -113,79 +158,58 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
             is_complete=False,
         )
 
+    if session.state == InterviewState.WRAP_UP:
+        session_manager.record_turn(session, speaker="candidate", text=body.answer)
+
+        if session.outro_questions_used >= MAX_OUTRO_QUESTIONS:
+            session.state = InterviewState.EVALUATING
+            session_manager.update_session(session)
+        else:
+            session.outro_questions_used += 1
+            reply = answer_candidate_question(
+                question=body.answer,
+                job_role=session.job_role,
+                jd_summary=session.jd_summary or {},
+            )
+            session_manager.update_session(session)
+            session_manager.record_turn(session, speaker="bot", text=reply)
+            return SubmitAnswerResponse(
+                session_id=body.session_id,
+                state=InterviewState.WRAP_UP,
+                next_question=reply,
+                question_number=None,
+                total_questions=len(session.questions),
+                topic="wrap_up",
+                is_complete=False,
+            )
+        # fall through to evaluation when the cap is hit
+        if session.state == InterviewState.EVALUATING:
+            return await _finalize_and_report(session, body.session_id)
+
     result = await turn_manager.process_answer(session, body.answer)
 
     if result.state == InterviewState.EVALUATING:
-        evaluation = await llm_service.generate_final_evaluation(session)
         session = session_manager.get_session(body.session_id)
-        session.evaluation = evaluation
-        session.state = InterviewState.COMPLETE
-        session_manager.end_session(session)
-
-        # Persist to PostgreSQL for history
-        confidences = [
-            qr.confidence for qr in session.question_results
-            if qr.confidence is not None
-        ]
-        avg_eval_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-
-        text_metrics = InterviewMetrics(
-            total_questions=len(session.questions),
-            questions_answered=len(session.question_results),
-            total_candidate_words=sum(
-                len(t.text.split()) for t in session.transcript if t.speaker == "candidate"
-            ),
-            total_bot_words=sum(
-                len(t.text.split()) for t in session.transcript if t.speaker == "bot"
-            ),
-            follow_ups_used=session.follow_up_count,
-            avg_transcription_confidence=1.0,
-            avg_evaluation_confidence=round(avg_eval_confidence, 3),
-            qa_extraction_confidence=1.0,
-        )
-
-        text_analysis = InterviewAnalysis(
-            summary=evaluation.summary,
-            strengths=evaluation.strengths,
-            weaknesses=evaluation.weaknesses,
-            overall_score=evaluation.overall_score,
-            hiring_recommendation=evaluation.recommendation,
-            per_question=[qr.model_dump() for qr in evaluation.per_question],
-            topic_scores=evaluation.topic_scores,
-        )
-
-        started = session.started_at
-        ended = session.ended_at
-        duration = None
-        if started and ended:
-            duration = int(
-                (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+        # Config-based interviews get a closing Q&A before evaluation.
+        if session.interview_config_id:
+            session.state = InterviewState.WRAP_UP
+            session_manager.update_session(session)
+            closing = (
+                f"That's the last of my questions, {session.candidate_name}. "
+                "Before we wrap up — do you have any questions for me about the role?"
             )
-
-        text_report = InterviewReport(
-            session_id=session.session_id,
-            candidate_name=session.candidate_name,
-            job_role=session.job_role,
-            experience_level=session.experience_level.value,
-            interview_type="text",
-            started_at=started,
-            ended_at=ended,
-            duration_seconds=duration,
-            transcript=[t.model_dump() for t in session.transcript],
-            metrics=text_metrics,
-            analysis=text_analysis,
-        )
-
-        await save_report_to_pg(text_report)
-
-        return SubmitAnswerResponse(
-            session_id=body.session_id,
-            state=InterviewState.COMPLETE,
-            score=result.score,
-            score_reasoning=result.score_reasoning,
-            is_complete=True,
-            feedback=evaluation.summary,
-        )
+            session_manager.record_turn(session, speaker="bot", text=closing)
+            return SubmitAnswerResponse(
+                session_id=body.session_id,
+                state=InterviewState.WRAP_UP,
+                score=result.score,
+                score_reasoning=result.score_reasoning,
+                next_question=closing,
+                total_questions=len(session.questions),
+                topic="wrap_up",
+                is_complete=False,
+            )
+        return await _finalize_and_report(session, body.session_id)
 
     return SubmitAnswerResponse(
         session_id=body.session_id,
@@ -197,6 +221,77 @@ async def submit_answer(body: SubmitAnswerRequest) -> SubmitAnswerResponse:
         total_questions=result.total_questions,
         topic=result.topic,
         is_complete=False,
+    )
+
+
+async def _finalize_and_report(session, session_id: str) -> SubmitAnswerResponse:
+    evaluation = await llm_service.generate_final_evaluation(session)
+    session = session_manager.get_session(session_id)
+    session.evaluation = evaluation
+    session.state = InterviewState.COMPLETE
+    session_manager.end_session(session)
+
+    # Persist to PostgreSQL for history
+    confidences = [
+        qr.confidence for qr in session.question_results
+        if qr.confidence is not None
+    ]
+    avg_eval_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+    text_metrics = InterviewMetrics(
+        total_questions=len(session.questions),
+        questions_answered=len(session.question_results),
+        total_candidate_words=sum(
+            len(t.text.split()) for t in session.transcript if t.speaker == "candidate"
+        ),
+        total_bot_words=sum(
+            len(t.text.split()) for t in session.transcript if t.speaker == "bot"
+        ),
+        follow_ups_used=session.follow_up_count,
+        avg_transcription_confidence=1.0,
+        avg_evaluation_confidence=round(avg_eval_confidence, 3),
+        qa_extraction_confidence=1.0,
+    )
+
+    text_analysis = InterviewAnalysis(
+        summary=evaluation.summary,
+        strengths=evaluation.strengths,
+        weaknesses=evaluation.weaknesses,
+        overall_score=evaluation.overall_score,
+        hiring_recommendation=evaluation.recommendation,
+        per_question=[qr.model_dump() for qr in evaluation.per_question],
+        topic_scores=evaluation.topic_scores,
+    )
+
+    started = session.started_at
+    ended = session.ended_at
+    duration = None
+    if started and ended:
+        duration = int(
+            (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+        )
+
+    text_report = InterviewReport(
+        session_id=session.session_id,
+        candidate_name=session.candidate_name,
+        job_role=session.job_role,
+        experience_level=session.experience_level.value,
+        interview_type="text",
+        started_at=started,
+        ended_at=ended,
+        duration_seconds=duration,
+        transcript=[t.model_dump() for t in session.transcript],
+        metrics=text_metrics,
+        analysis=text_analysis,
+    )
+
+    await save_report_to_pg(text_report)
+
+    return SubmitAnswerResponse(
+        session_id=session_id,
+        state=InterviewState.COMPLETE,
+        is_complete=True,
+        feedback=evaluation.summary,
     )
 
 

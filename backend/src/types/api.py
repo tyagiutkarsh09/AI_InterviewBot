@@ -40,6 +40,12 @@ class SubmitAnswerResponse(BaseModel):
     feedback: Optional[str] = None
 
 
+class StartFromConfigRequest(BaseModel):
+    interview_config_id: str = Field(min_length=1)
+    candidate_name: str = Field(min_length=1, max_length=100)
+    resume_details: Optional[dict] = None  # external parser's UserDetails (whitelisted on store)
+
+
 class GetReportResponse(BaseModel):
     session_id: str
     candidate_name: str
