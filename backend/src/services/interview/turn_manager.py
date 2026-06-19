@@ -5,6 +5,11 @@ from src.services.interview.state_machine import next_state_for_answer
 from src.services.interview import session_manager
 from src.services.llm import llm_service
 
+# Upper bound on follow-ups per question. After this many, the bot closes the
+# active question and advances even if the model asks for another follow-up, so
+# a confused candidate is never trapped on one question. Mirrors the voice path.
+MAX_FOLLOW_UPS = 2
+
 
 class TurnResult:
     def __init__(
@@ -43,13 +48,38 @@ async def process_answer(session: SessionState, answer_text: str) -> TurnResult:
         session=session,
     )
 
-    _record_question_result(session, current_q, answer_text, llm_result)
-
     if llm_result.score is not None:
         session.running_scores[current_q.topic] = llm_result.score
 
     if llm_result.flags:
         session.flags.extend(llm_result.flags)
+
+    # Follow-up: the answer was insufficient and the model wants to probe
+    # further. The active question stays the SAME — do not advance the index and
+    # do not finalize a QuestionResult yet. The follow-up text is surfaced as
+    # next_question so the candidate sees it, but it concerns the current topic,
+    # so their next answer is still evaluated against this question.
+    if llm_result.action == "follow_up" and session.follow_up_count < MAX_FOLLOW_UPS:
+        session.follow_up_count += 1
+        session.state = InterviewState.QUESTIONING
+        session_manager.update_session(session)
+        session_manager.record_turn(
+            session, speaker="bot", text=llm_result.spoken_text, question_id=current_q.id
+        )
+        return TurnResult(
+            state=session.state,
+            spoken_text=llm_result.spoken_text,
+            score=llm_result.score,
+            score_reasoning=llm_result.reasoning,
+            next_question=llm_result.spoken_text,
+            question_number=session.current_question_idx + 1,
+            total_questions=len(session.questions),
+            topic=current_q.topic,
+            is_complete=False,
+        )
+
+    # Question resolved (answered, or follow-up budget exhausted): finalize it.
+    _record_question_result(session, current_q, answer_text, llm_result)
 
     next_state = next_state_for_answer(
         session.current_question_idx, len(session.questions)

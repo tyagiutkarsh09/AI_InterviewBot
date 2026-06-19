@@ -22,6 +22,7 @@ class EvaluationResult:
     flags: list[str] = field(default_factory=list)
     internal_notes: str = ""
     confidence: Optional[float] = None
+    action: str = "acknowledge"
 
 
 async def evaluate_answer(
@@ -53,6 +54,7 @@ async def evaluate_answer(
             flags=parsed.flags,
             internal_notes=parsed.internal_notes,
             confidence=parsed.confidence,
+            action=parsed.action,
         )
     except Exception as exc:
         logger.error("LLM evaluation failed: %s", exc)

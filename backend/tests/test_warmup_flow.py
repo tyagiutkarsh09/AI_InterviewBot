@@ -63,7 +63,12 @@ def redis_patch():
     with (
         patch("src.lib.redis_client.set_json", side_effect=_fake_set_json),
         patch("src.lib.redis_client.get_json", side_effect=_fake_get_json),
-        patch("src.services.questions.question_bank.get_question_set", return_value=_FAKE_QUESTIONS),
+        # Patch where the name is *used* (session_manager binds it at import via
+        # `from ...question_bank import get_question_set`). Patching the
+        # question_bank module attribute alone is order-dependent: it only works
+        # if session_manager happens to be first imported while the patch is
+        # active. Patching the used binding makes this robust to collection order.
+        patch("src.services.interview.session_manager.get_question_set", return_value=_FAKE_QUESTIONS),
     ):
         yield
 
