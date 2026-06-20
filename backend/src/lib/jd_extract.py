@@ -29,7 +29,7 @@ def _extract_docx(data: bytes) -> str:
     return "\n".join(p.text for p in doc.paragraphs)
 
 
-def extract_jd_text(filename: str, data: bytes) -> str:
+def extract_jd_text(filename: str | None, data: bytes) -> str:
     ext = os.path.splitext(filename or "")[1].lower()
     try:
         if ext == ".pdf":
@@ -41,9 +41,12 @@ def extract_jd_text(filename: str, data: bytes) -> str:
     except JDExtractError:
         raise
     except Exception as exc:
-        logger.error("JD extraction failed for %s: %s", filename, exc)
+        # Caller turns JDExtractError into an HTTP 4xx, so this is expected/recoverable.
+        logger.warning("JD extraction failed for %s: %s", filename, exc)
         raise JDExtractError(f"Could not read JD file: {exc}") from exc
 
+    # Empty-text guard lives at the call boundary (not in the helpers) so a PDF of
+    # image-only pages and a whitespace-only DOCX are both caught in one place.
     if not text.strip():
         raise JDExtractError("JD file produced no extractable text")
     return text.strip()

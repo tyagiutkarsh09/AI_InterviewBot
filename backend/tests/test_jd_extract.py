@@ -75,3 +75,14 @@ def test_empty_pdf_raises(monkeypatch):
     monkeypatch.setattr("src.lib.jd_extract.PdfReader", _Reader)
     with pytest.raises(JDExtractError):
         extract_jd_text("jd.pdf", b"%PDF-fake")
+
+
+def test_corrupt_pdf_wraps_as_jd_extract_error(monkeypatch):
+    # A pypdf parse failure must surface as JDExtractError, not leak the raw
+    # library exception — that wrapping is the non-obvious part of the design.
+    def _bad_reader(*_a, **_k):
+        raise ValueError("not a PDF")
+
+    monkeypatch.setattr("src.lib.jd_extract.PdfReader", _bad_reader)
+    with pytest.raises(JDExtractError):
+        extract_jd_text("jd.pdf", b"garbage")
