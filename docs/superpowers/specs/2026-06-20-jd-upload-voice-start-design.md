@@ -31,8 +31,10 @@ The existing admin config feature is left as-is.
 - **Dependencies:** add `pypdf` (PDF text) + `python-docx` (DOCX text).
 - **Key Skills field:** **removed** from the voice form — the JD now supplies skills via
   `analyze_jd`; keeping it would be redundant and confusing.
-- **Question-count knobs:** `total_questions=6`, `core_question_ratio=0.8` — fixed defaults
-  matching the admin config form; **not** exposed on the voice UI.
+- **Question-count knobs:** `total_questions=6`, `core_question_ratio=0.5` — fixed defaults,
+  **not** exposed on the voice UI. 0.5 (vs the admin config form's 0.8) is deliberate: it
+  yields **2 JD-derived questions** so the interview is genuinely JD-anchored.
+  Split at total=6: `technical=4 → 2 JD + 2 core bank`, plus behavioral + project deep-dive.
 
 ## Scope constraint
 
@@ -67,7 +69,7 @@ extract_jd_text(filename: str, data: bytes) -> str
 - **Flow** (mirrors `admin.py:create_config`):
   1. Read bytes → `extract_jd_text(file.filename, data)`
   2. `analyze_jd(jd_text)` → `(jd_summary, jd_ideas)`
-  3. `build_plan(role, experience_level, jd_summary, jd_ideas, total_questions=6, core_ratio=0.8)`
+  3. `build_plan(role, experience_level, jd_summary, jd_ideas, total_questions=6, core_ratio=0.5)`
   4. `generate_introduction(candidate_name, job_role, len(plan.questions))`
   5. `create_voice_session(... questions_json=json.dumps([q.model_dump() for q in plan.questions]) ...)`
   6. Issue token + ws_url exactly as the existing start endpoint does.
@@ -112,7 +114,7 @@ startVoiceSessionFromJd(form: FormData): Promise<VoiceSessionStartResponse>
 ```
 Admin → voice/start (AdminGuard) → FormData{file, name, role, level}
   → POST /voice/session/start-from-jd  [X-Admin-Key enforced]
-    → extract_jd_text → analyze_jd → build_plan(6, 0.8)
+    → extract_jd_text → analyze_jd → build_plan(6, 0.5)
     → create_voice_session(questions = frozen plan)
     → {session_id, token, ws_url}
   → sessionStorage → /interview/voice/[sessionId] → existing WS pipeline
