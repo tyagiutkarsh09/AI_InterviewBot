@@ -34,6 +34,31 @@ export async function startVoiceSession(
   });
 }
 
+const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? "change-me-admin-key";
+
+export async function startVoiceSessionFromJd(
+  form: FormData
+): Promise<VoiceSessionStartResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/voice/session/start-from-jd`, {
+    method: "POST",
+    // X-Admin-Key only — do NOT set Content-Type; the browser adds the
+    // multipart boundary automatically when the body is FormData.
+    headers: { "X-Admin-Key": ADMIN_KEY },
+    body: form,
+  });
+  if (!res.ok) {
+    let detail: string | undefined;
+    try {
+      const body = await res.json();
+      detail = typeof body.detail === "string" ? body.detail : body.error;
+    } catch {
+      detail = res.statusText;
+    }
+    throw new ApiClientError(`HTTP ${res.status}`, res.status, detail);
+  }
+  return res.json() as Promise<VoiceSessionStartResponse>;
+}
+
 export async function getVoiceSessionState(sessionId: string) {
   return request<{
     session_id: string;
