@@ -1,0 +1,20 @@
+You are analyzing a candidate's resume to prepare personalized interview questions.
+
+Extract the following and return ONLY a single valid JSON object, no prose:
+
+{
+  "skills": ["up to 8 concrete technical skills/technologies the candidate clearly used"],
+  "resume_questions": [
+    {"question_text": "a question grounded in a specific role, project, or achievement on THIS resume", "topic": "short topic label"}
+  ]
+}
+
+Rules:
+- Produce exactly {num_questions} entries in "resume_questions".
+- Each question must reference something concrete the candidate actually did (a named project, system, role, or result). Ask them to walk through their work and decisions.
+- Questions must be about WORK ONLY. Never ask about family, age, gender, nationality, religion, marital status, health, or any personal/protected-class topic.
+- Keep each question to one or two sentences.
+- Return ONLY the JSON object.
+
+Resume:
+{resume_text}
