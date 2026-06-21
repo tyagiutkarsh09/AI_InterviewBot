@@ -82,5 +82,20 @@ def get_question_set(
     return unique[:count]
 
 
+def eligible_question_count(experience_level: ExperienceLevel) -> int:
+    """How many bank questions a candidate at this level is eligible for.
+
+    Mirrors get_question_set's gate: a question above the candidate's level (and
+    not tagged "all") is ineligible. Used to cap the no-JD question count so the
+    plan never asks for more bank questions than exist for the level.
+    """
+    candidate_rank = _level_rank(experience_level.value)
+    return sum(
+        1
+        for q in _load_all()
+        if not (_level_rank(q.experience_level) > candidate_rank and q.experience_level != "all")
+    )
+
+
 def get_question_by_id(question_id: str) -> Optional[Question]:
     return next((q for q in _load_all() if q.id == question_id), None)
