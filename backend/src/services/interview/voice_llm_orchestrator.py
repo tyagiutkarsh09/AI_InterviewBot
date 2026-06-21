@@ -47,6 +47,68 @@ COMPLETION_MESSAGE = (
     "report shortly."
 )
 
+from src.services.interview.outro import answer_candidate_question, MAX_OUTRO_QUESTIONS
+
+WRAP_UP_INVITE = (
+    "That's the last of my questions, {name}. Before we wrap up — is there "
+    "anything you'd like to ask me about the role or the team?"
+)
+CLOSING_SIGN_OFF = (
+    "Thank you so much for your time today, {name}. You'll get a summary of how the "
+    "interview went, and the recruiter will follow up with you on next steps. "
+    "Best of luck!"
+)
+
+_NO_QUESTION_PHRASES = (
+    "no", "nope", "no questions", "no question", "nothing", "im good", "i'm good",
+    "all good", "im fine", "i'm fine", "no thanks", "no thank you", "that's all",
+    "thats all", "nothing else",
+)
+
+
+def _is_no_questions(text: str) -> bool:
+    """Deterministic: did the candidate decline to ask anything? (code, not LLM)"""
+    t = text.lower().strip().strip(".!?,")
+    if t in _NO_QUESTION_PHRASES:
+        return True
+    leading = t.split(",")[0].strip()
+    if leading in _NO_QUESTION_PHRASES:
+        return True
+    return t.startswith(("no ", "no,", "nope", "nothing", "i'm good", "im good", "i'm fine", "im fine"))
+
+
+def _enter_wrap_up(session_id: str, voice_data: dict, lead_in: str = "") -> str:
+    set_voice_field(session_id, "interview_phase", "wrap_up")
+    set_voice_field(session_id, "outro_questions_used", 0)
+    name = voice_data.get("candidate_name", "there")
+    invite = WRAP_UP_INVITE.format(name=name)
+    append_transcript_turn(session_id, "bot", invite, entry_type="wrap_up_invite")
+    return f"{lead_in} {invite}".strip()
+
+
+async def _handle_wrap_up_turn(session_id: str, transcript: str, voice_data: dict) -> str:
+    name = voice_data.get("candidate_name", "there")
+    used = int(voice_data.get("outro_questions_used", 0))
+
+    if _is_no_questions(transcript) or used >= MAX_OUTRO_QUESTIONS:
+        set_voice_field(session_id, "interview_phase", "done")
+        sign_off = CLOSING_SIGN_OFF.format(name=name)
+        append_transcript_turn(session_id, "bot", sign_off, entry_type="closing")
+        asyncio.create_task(_trigger_final_evaluation(session_id))
+        return sign_off
+
+    # Candidate asked something — record it, answer ONLY from job context.
+    append_transcript_turn(session_id, "candidate", transcript, entry_type="wrap_up_question")
+    job_role = voice_data.get("job_role", "")
+    try:
+        jd_summary = json.loads(voice_data.get("jd_summary", "{}"))
+    except json.JSONDecodeError:
+        jd_summary = {}
+    reply = answer_candidate_question(transcript, job_role, jd_summary)
+    set_voice_field(session_id, "outro_questions_used", used + 1)
+    append_transcript_turn(session_id, "bot", reply, entry_type="wrap_up")
+    return f"{reply} Anything else you'd like to ask?"
+
 
 def _build_session_state(voice_data: dict[str, Any]) -> SessionState:
     """Reconstruct a SessionState from the Redis voice session hash."""
@@ -94,6 +156,9 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
     if voice_data is None:
         return "I lost track of the session. Let's continue."
 
+    if voice_data.get("interview_phase") == "wrap_up":
+        return await _handle_wrap_up_turn(session_id, transcript, voice_data)
+
     questions_raw: list[dict] = json.loads(voice_data.get("questions", "[]"))
     if not questions_raw:
         return "I'm having trouble loading the questions. Let's continue."
@@ -102,8 +167,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
     current_idx = int(voice_data.get("current_question_idx", 0))
 
     if current_idx >= len(questions):
-        asyncio.create_task(_trigger_final_evaluation(session_id))
-        return COMPLETION_MESSAGE
+        return _enter_wrap_up(session_id, voice_data)
 
     current_q = questions[current_idx]
 
@@ -178,9 +242,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            asyncio.create_task(_trigger_final_evaluation(session_id))
-            spoken = parsed.spoken_text or "Great."
-            return f"{spoken} {COMPLETION_MESSAGE}"
+            return _enter_wrap_up(session_id, voice_data, lead_in=parsed.spoken_text or "Great, thank you.")
 
         next_q = questions[next_idx]
         append_transcript_turn(session_id, "bot", next_q.question_text, entry_type="question")
@@ -206,8 +268,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            asyncio.create_task(_trigger_final_evaluation(session_id))
-            return COMPLETION_MESSAGE
+            return _enter_wrap_up(session_id, voice_data, lead_in=parsed.spoken_text or "Thank you.")
 
         next_q = questions[next_idx]
         append_transcript_turn(session_id, "bot", next_q.question_text, entry_type="question")
