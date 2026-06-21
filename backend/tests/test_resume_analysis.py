@@ -53,6 +53,25 @@ def test_analyze_resume_raises_on_client_error():
             analyze_resume("resume text")
 
 
+def test_analyze_resume_truncates_to_requested_count():
+    over = """
+    {
+      "skills": ["go"],
+      "resume_questions": [
+        {"question_text": "Q1", "topic": "a"},
+        {"question_text": "Q2", "topic": "b"},
+        {"question_text": "Q3", "topic": "c"}
+      ]
+    }
+    """
+    client = MagicMock()
+    client.messages.create.return_value = _mock_response(over)
+    with patch("src.services.llm.resume_analysis.get_anthropic_client", return_value=client):
+        _, questions = analyze_resume("resume text", num_questions=2)
+    assert len(questions) == 2
+    assert [q["question_text"] for q in questions] == ["Q1", "Q2"]
+
+
 def test_analyze_resume_raises_when_no_questions():
     client = MagicMock()
     client.messages.create.return_value = _mock_response('{"skills": ["go"], "resume_questions": []}')

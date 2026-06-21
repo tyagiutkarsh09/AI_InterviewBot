@@ -58,4 +58,6 @@ def analyze_resume(resume_text: str, num_questions: int = 2) -> tuple[list[str],
     ]
     if not questions:
         raise ResumeAnalysisError("Resume analysis produced no usable questions")
-    return skills, questions
+    # Cap to the requested count — the prompt asks for exactly num_questions, but the
+    # model can over-produce; the plan budgets a fixed number of resume slots.
+    return skills, questions[:num_questions]

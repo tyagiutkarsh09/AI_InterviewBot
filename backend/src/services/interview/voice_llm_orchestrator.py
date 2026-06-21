@@ -109,7 +109,9 @@ async def _handle_wrap_up_turn(session_id: str, transcript: str, voice_data: dic
         jd_summary = json.loads(voice_data.get("jd_summary", "{}"))
     except json.JSONDecodeError:
         jd_summary = {}
-    reply = answer_candidate_question(transcript, job_role, jd_summary)
+    # answer_candidate_question uses the SYNC Anthropic client; run it off the event
+    # loop so a wrap-up LLM round-trip doesn't stall other concurrent voice sessions.
+    reply = await asyncio.to_thread(answer_candidate_question, transcript, job_role, jd_summary)
     set_voice_field(session_id, "outro_questions_used", used + 1)
     append_transcript_turn(session_id, "bot", reply, entry_type="wrap_up")
     return f"{reply} Anything else you'd like to ask?"
