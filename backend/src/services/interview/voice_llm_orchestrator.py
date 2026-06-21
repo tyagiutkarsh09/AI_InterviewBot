@@ -71,10 +71,15 @@ def _is_no_questions(text: str) -> bool:
     t = text.lower().strip().strip(".!?,")
     if t in _NO_QUESTION_PHRASES:
         return True
+    words = t.split()
+    # Anything longer than a short utterance, or that contains a question signal,
+    # is presumed to carry a real question even if it opens with "no"/"nothing".
+    if len(words) > 4 or any(kw in t for kw in ("question", "ask", "wonder", "curious")):
+        return False
     leading = t.split(",")[0].strip()
     if leading in _NO_QUESTION_PHRASES:
         return True
-    return t.startswith(("no ", "no,", "nope", "nothing", "i'm good", "im good", "i'm fine", "im fine"))
+    return t.startswith(("no ", "nope", "nothing", "i'm good", "im good", "i'm fine", "im fine"))
 
 
 def _enter_wrap_up(session_id: str, voice_data: dict, lead_in: str = "") -> str:

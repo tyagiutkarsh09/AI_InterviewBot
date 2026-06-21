@@ -91,3 +91,17 @@ async def test_wrap_up_caps_questions(monkeypatch):
     await asyncio.sleep(0)  # let the fire-and-forget eval task run
     assert "thank you" in reply.lower()              # cap reached -> sign-off, no answer
     assert evaluated.get("sid") == "w3"
+
+
+def test_is_no_questions_true_for_plain_declines():
+    assert orch._is_no_questions("no")
+    assert orch._is_no_questions("Nope.")
+    assert orch._is_no_questions("No, I'm good, thanks.")
+    assert orch._is_no_questions("nothing else")
+    assert orch._is_no_questions("I'm good")
+
+
+def test_is_no_questions_false_when_a_real_question_follows():
+    assert not orch._is_no_questions("No worries, but I do have a question about the stack")
+    assert not orch._is_no_questions("Nothing comes to mind, but I am wondering about remote work")
+    assert not orch._is_no_questions("Actually, what's the team size?")
