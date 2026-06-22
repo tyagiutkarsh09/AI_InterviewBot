@@ -8,7 +8,10 @@ def get_anthropic_client() -> anthropic.Anthropic:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
-    return anthropic.Anthropic(api_key=api_key)
+    # Bounded timeout + capped retries so a stalled API call can't wedge the caller
+    # for the SDK default (600s, 2 retries). Defense-in-depth: voice handlers also
+    # offload these sync calls off the event loop via asyncio.to_thread.
+    return anthropic.Anthropic(api_key=api_key, timeout=30.0, max_retries=1)
 
 
 @lru_cache(maxsize=1)

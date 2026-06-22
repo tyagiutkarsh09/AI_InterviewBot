@@ -2,6 +2,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Optional
+from xml.sax.saxutils import unescape
 
 
 @dataclass
@@ -17,37 +18,63 @@ class ParsedLLMResponse:
     flags: list[str] = field(default_factory=list)
 
 
+# A bare '&' (one not opening a valid entity like &amp; or &#39;) makes the XML
+# not well-formed and crashes ET.fromstring. The interviewer LLM routinely writes
+# them in free-text fields (e.g. "<topic>Performance optimization & database
+# design</topic>"), so escape them before parsing instead of failing the whole
+# response. Only '&' is touched — never '<'/'>' — so tag structure is preserved.
+_BARE_AMP_RE = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
+
+# Extract just the candidate-facing line when the XML can't be parsed as a whole.
+_SPOKEN_TEXT_RE = re.compile(
+    r"<spoken_text>(.*?)</spoken_text>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _safe_spoken_fallback(raw: str) -> str:
+    """Candidate-safe text for when the XML can't be parsed.
+
+    NEVER returns the raw blob when it contains tags — that leaks internal_notes
+    and score_update to the candidate (the production incident this guards). Order:
+    1. Pull out <spoken_text> if present and speak only that.
+    2. If the raw is plain prose (no tags), speak it as-is (genuine non-XML reply).
+    3. Otherwise speak a neutral acknowledgement rather than risk a leak.
+    """
+    match = _SPOKEN_TEXT_RE.search(raw)
+    if match:
+        return unescape(match.group(1)).strip()
+    if "<" not in raw:
+        return raw.strip()
+    return "Thank you. Let's continue."
+
+
+def _fallback(raw: str) -> ParsedLLMResponse:
+    return ParsedLLMResponse(
+        action="acknowledge",
+        spoken_text=_safe_spoken_fallback(raw),
+        internal_notes="",
+        score=None,
+        score_topic=None,
+        reasoning=None,
+        next_state="questioning",
+        flags=[],
+    )
+
+
 def parse_xml_response(raw: str) -> ParsedLLMResponse:
     start = raw.find("<interviewer_response>")
     end = raw.find("</interviewer_response>")
 
     if start == -1 or end == -1:
-        return ParsedLLMResponse(
-            action="acknowledge",
-            spoken_text=raw.strip(),
-            internal_notes="",
-            score=None,
-            score_topic=None,
-            reasoning=None,
-            next_state="questioning",
-            flags=[],
-        )
+        return _fallback(raw)
 
     xml_str = raw[start : end + len("</interviewer_response>")]
+    xml_str = _BARE_AMP_RE.sub("&amp;", xml_str)
 
     try:
         root = ET.fromstring(xml_str)
     except ET.ParseError:
-        return ParsedLLMResponse(
-            action="acknowledge",
-            spoken_text=raw.strip(),
-            internal_notes="",
-            score=None,
-            score_topic=None,
-            reasoning=None,
-            next_state="questioning",
-            flags=[],
-        )
+        return _fallback(raw)
 
     score_elem = root.find("score_update")
     score: Optional[float] = None

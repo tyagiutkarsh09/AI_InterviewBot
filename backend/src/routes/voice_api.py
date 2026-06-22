@@ -5,6 +5,7 @@ POST /api/v1/voice/session/start  — create session, return token + session_id
 GET  /api/v1/voice/session/{id}   — rehydrate session state (for reconnect)
 """
 
+import asyncio
 import json as _json
 import logging
 import os
@@ -159,14 +160,21 @@ async def start_voice_session_from_jd(
     if resume is not None:
         resume_bytes = await resume.read()
         try:
-            resume_text = extract_jd_text(resume.filename or "", resume_bytes)
+            # Offloaded to a thread: extract_jd_text (sync pypdf/docx) and analyze_resume
+            # (sync Anthropic client) would otherwise block the single event loop and
+            # freeze the whole server. See get_async_anthropic_client docstring.
+            resume_text = await asyncio.to_thread(
+                extract_jd_text, resume.filename or "", resume_bytes
+            )
         except JDExtractError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Could not read the resume file.",
             )
         try:
-            resume_skills, resume_questions = analyze_resume(resume_text, num_questions=2)
+            resume_skills, resume_questions = await asyncio.to_thread(
+                analyze_resume, resume_text, num_questions=2
+            )
         except ResumeAnalysisError as exc:
             logger.error("Voice resume analysis failed: %s", exc)
             raise HTTPException(
@@ -180,14 +188,15 @@ async def start_voice_session_from_jd(
     if jd is not None:
         jd_bytes = await jd.read()
         try:
-            jd_text = extract_jd_text(jd.filename or "", jd_bytes)
+            # Offloaded to a thread for the same reason as the resume path above.
+            jd_text = await asyncio.to_thread(extract_jd_text, jd.filename or "", jd_bytes)
         except JDExtractError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Could not read the job description file.",
             )
         try:
-            parsed_summary, jd_ideas = analyze_jd(jd_text)
+            parsed_summary, jd_ideas = await asyncio.to_thread(analyze_jd, jd_text)
         except JDAnalysisError as exc:
             logger.error("Voice JD analysis failed: %s", exc)
             raise HTTPException(
