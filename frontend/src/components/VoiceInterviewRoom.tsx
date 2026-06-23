@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import type { VoiceCaptureState, TranscriptEntry } from "@/types/voice-interview";
+import type {
+  VoiceCaptureState,
+  TranscriptEntry,
+} from "@/types/voice-interview";
 
 interface Props {
   sessionId: string;
@@ -32,7 +35,11 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
   const [started, setStarted] = useState(false);
   const [ending, setEnding] = useState(false);
 
-  const captureRef = useRef<import("@/lib/voice-capture").VoiceCapture | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const captureRef = useRef<import("@/lib/voice-capture").VoiceCapture | null>(
+    null,
+  );
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number>(0);
@@ -87,10 +94,18 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
         if (isFinal) {
           setLiveText("");
           setTranscript((prev) => {
-            const withoutPartial = prev.filter((t) => t.isFinal || t.speaker !== "candidate");
+            const withoutPartial = prev.filter(
+              (t) => t.isFinal || t.speaker !== "candidate",
+            );
             return [
               ...withoutPartial,
-              { speaker: "candidate", text, isFinal: true, timestamp: Date.now(), type: "candidate" },
+              {
+                speaker: "candidate",
+                text,
+                isFinal: true,
+                timestamp: Date.now(),
+                type: "candidate",
+              },
             ];
           });
         } else {
@@ -106,12 +121,15 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
           const syncedTranscript = (data.transcript as Array<any>) || [];
           setTranscript(
             syncedTranscript.map((t: any) => ({
-              speaker: t.speaker as import("@/types/voice-interview").TurnSpeaker,
+              speaker:
+                t.speaker as import("@/types/voice-interview").TurnSpeaker,
               text: t.text || "",
               isFinal: true,
-              timestamp: t.timestamp ? new Date(t.timestamp).getTime() : Date.now(),
+              timestamp: t.timestamp
+                ? new Date(t.timestamp).getTime()
+                : Date.now(),
               type: t.type || undefined,
-            }))
+            })),
           );
           setLiveText("");
           return;
@@ -141,7 +159,13 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
           if (text) {
             setTranscript((prev) => [
               ...prev,
-              { speaker: "bot", text, isFinal: true, timestamp: Date.now(), type: (msgType as any) || undefined },
+              {
+                speaker: "bot",
+                text,
+                isFinal: true,
+                timestamp: Date.now(),
+                type: (msgType as any) || undefined,
+              },
             ]);
           }
         } else if (event === "turn") {
@@ -149,7 +173,13 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
           if (text) {
             setTranscript((prev) => [
               ...prev,
-              { speaker: "bot", text, isFinal: true, timestamp: Date.now(), type: (msgType as any) || undefined },
+              {
+                speaker: "bot",
+                text,
+                isFinal: true,
+                timestamp: Date.now(),
+                type: (msgType as any) || undefined,
+              },
             ]);
           }
         }
@@ -161,6 +191,17 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
       };
 
       await vc.start();
+
+      const stream = (
+        vc as unknown as {
+          mediaStream: MediaStream | null;
+        }
+      ).mediaStream;
+
+      if (stream && videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+
       captureRef.current = vc;
 
       // Wire analyser for waveform
@@ -172,7 +213,8 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
         analyser.fftSize = 256;
         analyserRef.current = analyser;
         // Connect the media stream source to analyser for visualization
-        const stream = (vc as unknown as { mediaStream: MediaStream | null }).mediaStream;
+        const stream = (vc as unknown as { mediaStream: MediaStream | null })
+          .mediaStream;
         if (stream && vcAny.audioCtx) {
           const src = vcAny.audioCtx.createMediaStreamSource(stream);
           src.connect(analyser);
@@ -221,7 +263,9 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
         <div className="flex items-center gap-2">
           <span className="text-xl">🎙</span>
           <span className="font-semibold text-slate-800">Voice Interview</span>
-          <span className="text-xs text-slate-400 font-mono">{sessionId.slice(0, 8)}…</span>
+          <span className="text-xs text-slate-400 font-mono">
+            {sessionId.slice(0, 8)}…
+          </span>
         </div>
         {started && (
           <button
@@ -238,7 +282,15 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
       <div
         className={`rounded-xl px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors ${STATE_COLORS[captureState]}`}
       >
-        <span>{captureState === "speaking" ? "🔴" : captureState === "bot_speaking" ? "🔊" : captureState === "processing" ? "⏳" : "⏸"}</span>
+        <span>
+          {captureState === "speaking"
+            ? "🔴"
+            : captureState === "bot_speaking"
+              ? "🔊"
+              : captureState === "processing"
+                ? "⏳"
+                : "⏸"}
+        </span>
         {STATE_LABELS[captureState]}
       </div>
 
@@ -260,11 +312,15 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
         <div className="p-4 space-y-3 max-h-72 overflow-y-auto">
           {transcript.length === 0 && !liveText && (
             <p className="text-sm text-slate-400 text-center py-4">
-              {started ? "Conversation will appear here…" : "Start the interview to begin."}
+              {started
+                ? "Conversation will appear here…"
+                : "Start the interview to begin."}
             </p>
           )}
           {(() => {
-            const displayTranscript = transcript.filter(e => e.type !== "silence_prompt");
+            const displayTranscript = transcript.filter(
+              (e) => e.type !== "silence_prompt",
+            );
             const baseTime = displayTranscript[0]?.timestamp || 0;
 
             const formatTime = (ts: number): string | null => {
@@ -276,7 +332,8 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
             };
 
             return displayTranscript.map((entry, i) => {
-              const prevSameSpeaker = i > 0 && displayTranscript[i - 1]?.speaker === entry.speaker;
+              const prevSameSpeaker =
+                i > 0 && displayTranscript[i - 1]?.speaker === entry.speaker;
               const timeLabel = formatTime(entry.timestamp);
 
               // Type-based styling for bot entries
@@ -317,7 +374,9 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
                       {entry.text}
                     </div>
                     {timeLabel && (
-                      <span className={`text-xs text-slate-400 ${entry.speaker === "bot" ? "ml-1" : "mr-1 text-right"}`}>
+                      <span
+                        className={`text-xs text-slate-400 ${entry.speaker === "bot" ? "ml-1" : "mr-1 text-right"}`}
+                      >
                         {timeLabel}
                       </span>
                     )}
@@ -356,6 +415,14 @@ export default function VoiceInterviewRoom({ sessionId, wsUrl }: Props) {
           🎙 Start Voice Interview
         </button>
       )}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        className="w-full rounded-xl border border-slate-200"
+      />
 
       <p className="text-xs text-slate-400 text-center">
         Speak naturally. The AI will ask questions and respond with voice.

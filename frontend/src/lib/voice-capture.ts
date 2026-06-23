@@ -13,7 +13,7 @@
  *   onError(err)                  — capture or WS error
  */
 
-export type CaptureState = 'idle' | 'speaking' | 'processing' | 'bot_speaking';
+export type CaptureState = "idle" | "speaking" | "processing" | "bot_speaking";
 
 const SAMPLE_RATE = 48000;
 const RECONNECT_DELAY_MS = 2000;
@@ -25,6 +25,8 @@ export class VoiceCapture {
   onControlMessage: (data: Record<string, unknown>) => void = () => {};
   onError: (err: Error) => void = () => {};
 
+  private videoRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
   private wsUrl: string;
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
@@ -39,7 +41,7 @@ export class VoiceCapture {
   private reconnectCount = 0;
   private stopped = false;
   private endingSession = false;
-  private currentState: CaptureState = 'idle';
+  private currentState: CaptureState = "idle";
 
   constructor(wsUrl: string) {
     this.wsUrl = wsUrl;
@@ -58,15 +60,16 @@ export class VoiceCapture {
     this._cleanup();
   }
 
-  endInterview(): void {
+  async endInterview(): Promise<void> {
     this.endingSession = true;
-    this._setState('processing');
-    this._sendControl({ event: 'end_session' });
+    await this._saveRecording();
+    this._setState("processing");
+    this._sendControl({ event: "end_session" });
   }
 
   /** Called when server signals bot is speaking — disables mic sending. */
   setBotSpeaking(speaking: boolean): void {
-    this._setState(speaking ? 'bot_speaking' : 'idle');
+    this._setState(speaking ? "bot_speaking" : "idle");
     if (!speaking) {
       this.stopBotAudio();
     }
@@ -91,12 +94,14 @@ export class VoiceCapture {
     const mp3 = this._concatBuffers(this.ttsChunks);
     this.ttsChunks = [];
     const gen = this.audioGen;
-    this.ttsFlushChain = this.ttsFlushChain.then(() => this._scheduleMp3(mp3, gen));
+    this.ttsFlushChain = this.ttsFlushChain.then(() =>
+      this._scheduleMp3(mp3, gen),
+    );
   }
 
   private async _scheduleMp3(mp3: ArrayBuffer, gen: number): Promise<void> {
     if (!this.audioCtx || gen !== this.audioGen) return;
-    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+    if (this.audioCtx.state === "suspended") await this.audioCtx.resume();
     let decoded: AudioBuffer;
     try {
       decoded = await this.audioCtx.decodeAudioData(mp3);
@@ -153,20 +158,30 @@ export class VoiceCapture {
         noiseSuppression: true,
         autoGainControl: true,
       },
-      video: false,
+      video: {
+        width: 1280,
+        height: 720,
+        facingMode: "user",
+      },
     });
 
     this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
     await this.audioCtx.resume();
-    await this.audioCtx.audioWorklet.addModule('/worklets/resampler.worklet.js');
+    await this.audioCtx.audioWorklet.addModule(
+      "/worklets/resampler.worklet.js",
+    );
+    this._initVideoRecording();
 
     const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-    this.workletNode = new AudioWorkletNode(this.audioCtx, 'resampler-processor');
+    this.workletNode = new AudioWorkletNode(
+      this.audioCtx,
+      "resampler-processor",
+    );
 
     // Worklet sends 320-sample Float32 chunks
     this.workletNode.port.onmessage = (evt: MessageEvent) => {
       const { pcm } = evt.data as { pcm: Float32Array };
-      this.vadWorker?.postMessage({ type: 'audio', pcm }, [pcm.buffer]);
+      this.vadWorker?.postMessage({ type: "audio", pcm }, [pcm.buffer]);
     };
 
     source.connect(this.workletNode);
@@ -175,25 +190,58 @@ export class VoiceCapture {
     this._initVadWorker();
   }
 
+  private _initVideoRecording(): void {
+    if (!this.mediaStream) return;
+
+    this.videoRecorder = new MediaRecorder(this.mediaStream, {
+      mimeType: "video/webm;codecs=vp9,opus",
+    });
+
+    this.videoRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        this.recordedChunks.push(event.data);
+      }
+    };
+
+    this.videoRecorder.start(10000);
+  }
+
+  private async _saveRecording(): Promise<void> {
+    if (!this.recordedChunks.length) return;
+
+    const blob = new Blob(this.recordedChunks, {
+      type: "video/webm",
+    });
+
+    const formData = new FormData();
+
+    formData.append("video", blob, `interview-${Date.now()}.webm`);
+
+    await fetch("/api/interviews/upload-video", {
+      method: "POST",
+      body: formData,
+    });
+  }
+
   private _initVadWorker(): void {
     this.vadWorker = new Worker(
-      new URL('../workers/vad.worker.ts', import.meta.url)
+      new URL("../workers/vad.worker.ts", import.meta.url),
     );
 
     this.vadWorker.onmessage = (evt: MessageEvent) => {
       const { event, pcm } = evt.data as { event: string; pcm?: Int16Array };
 
-      if (event === 'speech_start') {
-        this._setState('speaking');
-        this._sendControl({ event: 'speech_start' });
-      } else if (event === 'speech_end') {
-        this._setState('processing');
-        this._sendControl({ event: 'speech_end' });
-      } else if (event === 'audio_chunk' && pcm) {
+      if (event === "speech_start") {
+        this._setState("speaking");
+        this._sendControl({ event: "speech_start" });
+      } else if (event === "speech_end") {
+        this._setState("processing");
+        this._sendControl({ event: "speech_end" });
+      } else if (event === "audio_chunk" && pcm) {
         // Only send during active states — bot_speaking means barge-in
         if (
-          (this.currentState === 'speaking' ||
-            this.currentState === 'bot_speaking') &&
+          (this.currentState === "speaking" ||
+            this.currentState === "bot_speaking") &&
           this.ws?.readyState === WebSocket.OPEN
         ) {
           this.ws.send(pcm.buffer);
@@ -210,7 +258,7 @@ export class VoiceCapture {
     if (this.stopped) return;
 
     this.ws = new WebSocket(this.wsUrl);
-    this.ws.binaryType = 'arraybuffer';
+    this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
       this.reconnectCount = 0;
@@ -220,7 +268,7 @@ export class VoiceCapture {
       if (evt.data instanceof ArrayBuffer) {
         // Binary = TTS audio chunk — buffer until the sentence completes
         this._bufferTtsChunk(evt.data);
-      } else if (typeof evt.data === 'string') {
+      } else if (typeof evt.data === "string") {
         try {
           const data = JSON.parse(evt.data) as Record<string, unknown>;
           this._handleServerControl(data);
@@ -235,36 +283,33 @@ export class VoiceCapture {
     };
 
     this.ws.onerror = () => {
-      this.onError(new Error('WebSocket connection error'));
+      this.onError(new Error("WebSocket connection error"));
     };
   }
 
   private _handleServerControl(data: Record<string, unknown>): void {
     const event = data.event as string;
 
-    if (event === 'transcript') {
-      this.onTranscript(
-        data.text as string,
-        data.is_final as boolean
-      );
-    } else if (event === 'turn') {
+    if (event === "transcript") {
+      this.onTranscript(data.text as string, data.is_final as boolean);
+    } else if (event === "turn") {
       const speaker = data.speaker as string;
-      this._setState(speaker === 'bot' ? 'bot_speaking' : 'idle');
-    } else if (event === 'barge_in') {
+      this._setState(speaker === "bot" ? "bot_speaking" : "idle");
+    } else if (event === "barge_in") {
       this.stopBotAudio();
-      this._setState('speaking');
-    } else if (event === 'ping') {
-      this._sendControl({ event: 'pong' });
-    } else if (event === 'tts_sentence_complete') {
+      this._setState("speaking");
+    } else if (event === "ping") {
+      this._sendControl({ event: "pong" });
+    } else if (event === "tts_sentence_complete") {
       // Sentence fully streamed — decode and schedule it for playback
       this._onSentenceComplete();
-    } else if (event === 'interview_complete') {
+    } else if (event === "interview_complete") {
       this.endingSession = true;
-      this._setState('idle');
+      this._setState("idle");
       this.onControlMessage(data);
-    } else if (event === 'evaluating') {
+    } else if (event === "evaluating") {
       this.endingSession = true;
-      this._setState('processing');
+      this._setState("processing");
       this.onControlMessage(data);
     } else {
       this.onControlMessage(data);
@@ -297,6 +342,10 @@ export class VoiceCapture {
 
     this.workletNode?.disconnect();
     this.workletNode = null;
+
+    if (this.videoRecorder && this.videoRecorder.state !== "inactive") {
+      this.videoRecorder.stop();
+    }
 
     this.mediaStream?.getTracks().forEach((t) => t.stop());
     this.mediaStream = null;
