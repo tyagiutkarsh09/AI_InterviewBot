@@ -78,3 +78,65 @@ async def test_barge_in_cancels_tts_and_opens_mic(fake_ws: FakeWebSocket):
         for m in fake_ws.json_messages
     )
     assert int(get_voice_session("s-barge")["barge_in_count"]) == 1
+
+
+import src.services.interview.voice_turn_processor as vtp
+from tests.conftest import make_question
+from src.services.audio.voice_session import increment_voice_field
+
+
+class _RecordingTTS:
+    """Captures each sentence handed to TTS so tests can assert what was spoken."""
+
+    def __init__(self) -> None:
+        self.spoken: list[str] = []
+
+    async def stream_sentence(self, text: str, ws) -> None:
+        self.spoken.append(text)
+
+
+@pytest.mark.asyncio
+async def test_silence_monitor_speaks_both_nudges(fake_ws, monkeypatch):
+    """The check-ins must be SPOKEN (streamed to TTS), not just emitted as JSON.
+    The original bug was that prompts were sent as text-only events the candidate
+    never heard — a test asserting only the JSON event would have passed against it."""
+    monkeypatch.setattr(vtp, "SILENCE_PROMPT_SECS", 0.01)
+    monkeypatch.setattr(vtp, "SILENCE_CHECKIN_SECS", 0.02)
+    monkeypatch.setattr(vtp, "SILENCE_STRIKE_SECS", 100)  # never reach advance here
+
+    seed_voice_session("s-nudge", [make_question("q1", "python"), make_question("q2", "sql")])
+    state = vtp.VoiceTurnState("s-nudge", fake_ws)
+    tts = _RecordingTTS()
+    state.tts = tts  # type: ignore[assignment]
+
+    state._start_silence_monitor()
+    await asyncio.sleep(0.1)
+    state.cancel_silence_monitor()
+
+    joined = " ".join(tts.spoken)
+    assert "Take your time" in joined, "first nudge was not spoken"
+    assert "Are you still there" in joined, "second nudge was not spoken"
+
+
+@pytest.mark.asyncio
+async def test_speech_start_cancels_pending_nudges(fake_ws, monkeypatch):
+    """A candidate who resumes speaking mid-ladder must not be talked over by a
+    queued nudge or advance — cancel_silence_monitor stops the rest of the ladder."""
+    monkeypatch.setattr(vtp, "SILENCE_PROMPT_SECS", 0.01)
+    monkeypatch.setattr(vtp, "SILENCE_CHECKIN_SECS", 0.05)
+    monkeypatch.setattr(vtp, "SILENCE_STRIKE_SECS", 0.09)
+
+    seed_voice_session("s-cancel", [make_question("q1", "python"), make_question("q2", "sql")])
+    state = vtp.VoiceTurnState("s-cancel", fake_ws)
+    tts = _RecordingTTS()
+    state.tts = tts  # type: ignore[assignment]
+
+    state._start_silence_monitor()
+    await asyncio.sleep(0.02)   # first nudge has fired, second has not
+    state.cancel_silence_monitor()
+    await asyncio.sleep(0.1)    # give any (wrongly) pending nudge time to fire
+
+    joined = " ".join(tts.spoken)
+    assert "Take your time" in joined
+    assert "Are you still there" not in joined, "second nudge fired after cancel"
+    assert int(get_voice_session("s-cancel")["current_question_idx"]) == 0, "advanced after cancel"
