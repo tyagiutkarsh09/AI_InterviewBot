@@ -196,6 +196,48 @@ class VoiceTurnState:
         self._silence_task = None
         self._silence_prompt_count = 0
 
+    async def _advance_after_silence(self) -> None:
+        """Deterministically advance to the next question after the candidate
+        stays silent through the full nudge ladder. No LLM call — mirrors the
+        advance branch of run_llm_turn using code only.
+        """
+        try:
+            voice_data = get_voice_session(self.session_id)
+            if voice_data is None:
+                return
+
+            questions = [Question(**q) for q in json.loads(voice_data.get("questions", "[]"))]
+            current_idx = int(voice_data.get("current_question_idx", 0))
+            next_idx = current_idx + 1
+            set_voice_field(self.session_id, "current_question_idx", next_idx)
+            set_voice_field(self.session_id, "follow_up_count", 0)
+
+            # Lazy import: voice_llm_orchestrator imports this module's siblings;
+            # importing it at module load risks a circular import (same pattern as
+            # the lazy run_llm_turn import in process_voice_turn).
+            from src.services.interview.voice_llm_orchestrator import _enter_wrap_up
+
+            if next_idx >= len(questions):
+                invite = _enter_wrap_up(self.session_id, voice_data, lead_in=SILENCE_ADVANCE)
+                await self.stream_response(invite, entry_type="wrap_up_invite")
+                return
+
+            next_q = questions[next_idx]
+            append_transcript_turn(
+                self.session_id, "bot", next_q.question_text, entry_type="question"
+            )
+            spoken = f"{SILENCE_ADVANCE} {next_q.question_text}".strip()
+            await self.stream_response(spoken)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Silence advance failed session=%s: %s", self.session_id, exc)
+            await _send_json(self.ws, {
+                "event": "error",
+                "message": "I had trouble moving to the next question.",
+            })
+            set_voice_field(self.session_id, "state", "WAITING_FOR_CANDIDATE")
+
     async def _silence_monitor(self) -> None:
         try:
             await asyncio.sleep(SILENCE_PROMPT_SECS)
