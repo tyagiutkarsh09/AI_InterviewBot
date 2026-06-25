@@ -8,12 +8,14 @@ from src.services.interview.plan_math import compute_split, compute_voice_split
 from src.services.interview.special_questions import (
     build_behavioral_question,
     build_jd_question,
+    build_planned_question,
     build_project_question,
     build_resume_question,
 )
 from src.services.questions.question_bank import get_question_set
 from src.types.config import InterviewPlan, JDSummary
 from src.types.interview import ExperienceLevel, Question
+from src.types.planning import InterviewPlanDraft
 
 
 class InsufficientQuestionsError(RuntimeError):
@@ -105,4 +107,22 @@ def build_voice_plan(
     ]
 
     questions = technical + resume_qs + [build_behavioral_question(), build_project_question()]
+    return InterviewPlan(questions=questions)
+
+
+def assemble_voice_plan(draft: InterviewPlanDraft, usable_count: int) -> InterviewPlan:
+    """Draft -> frozen plan: easy-first technical (jd+resume) -> behavioral -> project.
+
+    usable_count caps the technical questions (the floor math decides it). Behavioral
+    is fixed; the project deep-dive is grounded in the draft's project_question_text.
+    """
+    technical = [
+        build_planned_question(pq, index=i)
+        for i, pq in enumerate(draft.questions[:usable_count])
+    ]
+    technical = order_easy_first(technical)
+    questions = technical + [
+        build_behavioral_question(),
+        build_project_question(draft.project_question_text),
+    ]
     return InterviewPlan(questions=questions)
