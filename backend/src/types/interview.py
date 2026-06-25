@@ -38,6 +38,7 @@ class Question(BaseModel):
     follow_up_texts: list[str] = Field(default_factory=list)
     rubric: dict = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
+    time_budget_sec: Optional[int] = None  # soft pacing hint; planner-set, None for bank Qs
 
 
 class TurnRecord(BaseModel):
