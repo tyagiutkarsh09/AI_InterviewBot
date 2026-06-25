@@ -15,6 +15,7 @@ Scores written to Redis immediately; session end hands off to existing evaluatio
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from src.lib.anthropic_client import get_async_anthropic_client, get_model_for_task
@@ -28,7 +29,7 @@ from src.services.llm.prompt_builder import (
     build_system_prompt,
     build_answer_evaluation_prompt,
 )
-from src.services.llm.response_parser import parse_xml_response
+from src.services.llm.response_parser import parse_xml_response, validate_single_question
 from src.types.interview import (
     ExperienceLevel,
     InterviewState,
@@ -64,6 +65,29 @@ _NO_QUESTION_PHRASES = (
     "all good", "im fine", "i'm fine", "no thanks", "no thank you", "that's all",
     "thats all", "nothing else",
 )
+
+
+def _acknowledgment_only(spoken: str) -> str:
+    """Reduce an LLM acknowledgment bridge to its non-interrogative lead-in.
+
+    The orchestrator appends the canonical next question (from the question bank
+    or the wrap-up invite) on top of spoken_text, so spoken_text must contribute
+    only a brief acknowledgment. Any question the model included would otherwise
+    reach the candidate as a SECOND question — the "two questions at once" bug.
+    Keep the leading non-question sentences; drop everything from the first
+    question onward. (The follow_up path keeps spoken_text verbatim and is not
+    routed through here, since there the question IS the turn.)
+    """
+    if not spoken:
+        return ""
+    if "?" not in spoken:
+        return spoken.strip()
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", spoken.strip()):
+        if "?" in sentence:
+            break
+        kept.append(sentence)
+    return " ".join(kept).strip()
 
 
 def _is_no_questions(text: str) -> bool:
@@ -249,11 +273,15 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            return _enter_wrap_up(session_id, voice_data, lead_in=parsed.spoken_text or "Great, thank you.")
+            return _enter_wrap_up(
+                session_id,
+                voice_data,
+                lead_in=_acknowledgment_only(parsed.spoken_text) or "Great, thank you.",
+            )
 
         next_q = questions[next_idx]
         append_transcript_turn(session_id, "bot", next_q.question_text, entry_type="question")
-        spoken = parsed.spoken_text or "Thank you."
+        spoken = _acknowledgment_only(parsed.spoken_text) or "Thank you."
         return f"{spoken} {next_q.question_text}"
 
     elif action == "follow_up":
@@ -263,10 +291,11 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         )
         fu_by_topic[current_q.topic] = fu_by_topic.get(current_q.topic, 0) + 1
         set_voice_field(session_id, "follow_ups_by_topic", json.dumps(fu_by_topic))
-        append_transcript_turn(
-            session_id, "bot", parsed.spoken_text or "Can you elaborate?", entry_type="follow_up"
-        )
-        return parsed.spoken_text or "Could you tell me more about that?"
+        # A follow-up's spoken_text IS the question, but the model sometimes packs
+        # two into it; reduce to a single question before it reaches the candidate.
+        follow_up_text = validate_single_question(parsed.spoken_text) or "Could you tell me more about that?"
+        append_transcript_turn(session_id, "bot", follow_up_text, entry_type="follow_up")
+        return follow_up_text
 
     else:
         # Default: acknowledge and move on
@@ -275,11 +304,15 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_up_count", 0)
 
         if next_idx >= len(questions):
-            return _enter_wrap_up(session_id, voice_data, lead_in=parsed.spoken_text or "Thank you.")
+            return _enter_wrap_up(
+                session_id,
+                voice_data,
+                lead_in=_acknowledgment_only(parsed.spoken_text) or "Thank you.",
+            )
 
         next_q = questions[next_idx]
         append_transcript_turn(session_id, "bot", next_q.question_text, entry_type="question")
-        spoken = parsed.spoken_text or "Thank you."
+        spoken = _acknowledgment_only(parsed.spoken_text) or "Thank you."
         return f"{spoken} {next_q.question_text}"
 
 
