@@ -20,22 +20,3 @@ def compute_split(total_questions: int, core_ratio: float) -> tuple[int, int]:
     jd_count = min(jd_count, technical - 1)  # leave at least one core question
     core_count = technical - jd_count
     return core_count, jd_count
-
-
-def compute_voice_split(
-    technical_count: int, core_ratio: float, has_jd: bool
-) -> tuple[int, int]:
-    """Split the VOICE technical pool into (core_count, jd_count).
-
-    technical_count IS the technical pool (NOT a total with reserved slots —
-    behavioral/project/resume are added separately by build_voice_plan). With no
-    JD, all technical questions come from the bank. With a JD, jd is floored at 1
-    and capped at technical-1 so at least one core question always remains.
-    """
-    if technical_count < 1:
-        raise ValueError(f"technical_count must be >= 1, got {technical_count}")
-    if not has_jd or technical_count == 1:
-        return technical_count, 0
-    jd_count = max(1, technical_count - round(technical_count * core_ratio))
-    jd_count = min(jd_count, technical_count - 1)
-    return technical_count - jd_count, jd_count

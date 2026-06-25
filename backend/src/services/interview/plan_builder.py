@@ -4,13 +4,12 @@ Order: [core...] -> [jd...] -> behavioral -> project_deepdive.
 Fails loud if the bank cannot supply the required core count or there are not
 enough JD question ideas.
 """
-from src.services.interview.plan_math import compute_split, compute_voice_split
+from src.services.interview.plan_math import compute_split
 from src.services.interview.special_questions import (
     build_behavioral_question,
     build_jd_question,
     build_planned_question,
     build_project_question,
-    build_resume_question,
 )
 from src.services.questions.question_bank import get_question_set
 from src.types.config import InterviewPlan, JDSummary
@@ -67,47 +66,6 @@ def order_easy_first(questions: list[Question]) -> list[Question]:
     lead = [questions[i] for i in ranked[:2]]
     rest = [q for i, q in enumerate(questions) if i not in lead_idx]
     return lead + rest
-
-
-def build_voice_plan(
-    role: str,
-    experience_level: ExperienceLevel,
-    jd_summary: JDSummary,
-    jd_question_ideas: list[dict],
-    resume_questions: list[dict],
-    technical_count: int,
-    core_ratio: float,
-) -> InterviewPlan:
-    """Assemble the VOICE interview plan (additive model).
-
-    Order: [easy-first technical (core + optional jd)] -> [resume] -> behavioral
-    -> project. technical_count counts ONLY technical questions; resume/behavioral/
-    project are additive. JD ideas are optional (empty -> bank-only technical).
-    """
-    has_jd = bool(jd_question_ideas)
-    core_count, jd_count = compute_voice_split(technical_count, core_ratio, has_jd)
-
-    core_qs = get_question_set(role, experience_level, jd_summary.skills, core_count)
-    if len(core_qs) < core_count:
-        raise InsufficientQuestionsError(
-            f"Bank supplied {len(core_qs)} core questions, need {core_count}"
-        )
-    core_qs = core_qs[:core_count]
-
-    jd_qs = [
-        build_jd_question(idea["question_text"], idea.get("topic", ""), index=i)
-        for i, idea in enumerate(jd_question_ideas[:jd_count])
-    ]
-
-    technical = order_easy_first(core_qs + jd_qs)
-
-    resume_qs = [
-        build_resume_question(idea["question_text"], idea.get("topic", ""), index=i)
-        for i, idea in enumerate(resume_questions)
-    ]
-
-    questions = technical + resume_qs + [build_behavioral_question(), build_project_question()]
-    return InterviewPlan(questions=questions)
 
 
 def assemble_voice_plan(draft: InterviewPlanDraft, usable_count: int) -> InterviewPlan:

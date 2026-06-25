@@ -71,9 +71,8 @@ def build_planned_question(pq: PlannedQuestion, index: int) -> Question:
     )
 
 
-# Legacy builders for the text/admin-config flow (build_plan). The voice flow uses
-# build_planned_question instead; build_resume_question is removed when the voice-only
-# build_voice_plan goes away.
+# Legacy builder for the text/admin-config flow (build_plan). The voice flow uses
+# build_planned_question instead.
 def build_jd_question(question_text: str, topic: str, index: int) -> Question:
     return Question(
         id=f"jd_{index}",
@@ -84,17 +83,4 @@ def build_jd_question(question_text: str, topic: str, index: int) -> Question:
         question_text=question_text,
         rubric=_GENERIC_RUBRIC,
         tags=["jd_generated"],
-    )
-
-
-def build_resume_question(question_text: str, topic: str, index: int) -> Question:
-    return Question(
-        id=f"resume_{index}",
-        topic=topic or "candidate background",
-        difficulty="medium",
-        question_type=QuestionType.SCENARIO,
-        experience_level="all",
-        question_text=question_text,
-        rubric=_GENERIC_RUBRIC,
-        tags=["resume_generated"],
     )
