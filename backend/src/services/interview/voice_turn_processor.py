@@ -69,6 +69,17 @@ class VoiceTurnState:
         self.current_tts_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self.tts = ElevenLabsTTS()
         self._silence_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._silence_advance_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+
+    def _track_task(self, attr_name: str, task: asyncio.Task) -> asyncio.Task:
+        setattr(self, attr_name, task)
+
+        def _clear(done_task: asyncio.Task) -> None:
+            if getattr(self, attr_name) is done_task:
+                setattr(self, attr_name, None)
+
+        task.add_done_callback(_clear)
+        return task
 
     async def handle_barge_in(self) -> None:
         """Cancel current TTS and open mic."""
@@ -188,12 +199,15 @@ class VoiceTurnState:
     def _start_silence_monitor(self) -> None:
         if self._silence_task and not self._silence_task.done():
             self._silence_task.cancel()
-        self._silence_task = asyncio.create_task(self._silence_monitor())
+        self._track_task("_silence_task", asyncio.create_task(self._silence_monitor()))
 
     def cancel_silence_monitor(self) -> None:
         if self._silence_task and not self._silence_task.done():
             self._silence_task.cancel()
+        if self._silence_advance_task and not self._silence_advance_task.done():
+            self._silence_advance_task.cancel()
         self._silence_task = None
+        self._silence_advance_task = None
 
     async def _advance_after_silence(self) -> None:
         """Deterministically advance to the next question after the candidate
@@ -256,8 +270,12 @@ class VoiceTurnState:
             # Run the advance in its own task so this coroutine returns cleanly:
             # the advance's stream_response starts a fresh silence monitor, which
             # would otherwise cancel this still-running coroutine mid-await and
-            # cut off the next question's audio.
-            asyncio.create_task(self._advance_after_silence())
+            # cut off the next question's audio. Keep the handle so speech_start
+            # and disconnect cleanup can still cancel the pending advance.
+            self._track_task(
+                "_silence_advance_task",
+                asyncio.create_task(self._advance_after_silence()),
+            )
         except asyncio.CancelledError:
             pass
 

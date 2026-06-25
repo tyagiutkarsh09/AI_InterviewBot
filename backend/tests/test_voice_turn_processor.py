@@ -202,3 +202,40 @@ async def test_silence_monitor_triggers_advance_and_strike(fake_ws, monkeypatch)
 
     assert int(get_voice_session("s-trig")["silence_strikes"]) == 1
     assert any(m.get("event") == "silence_strike" for m in fake_ws.json_messages)
+
+
+@pytest.mark.asyncio
+async def test_cancel_silence_monitor_cancels_spawned_advance_task(fake_ws, monkeypatch):
+    """Once the final timeout fires, the follow-on advance task must still be
+    cancellable so speech_start/disconnect cannot advance the interview after
+    the candidate resumed or the socket closed."""
+    monkeypatch.setattr(vtp, "SILENCE_PROMPT_SECS", 0.01)
+    monkeypatch.setattr(vtp, "SILENCE_CHECKIN_SECS", 0.02)
+    monkeypatch.setattr(vtp, "SILENCE_STRIKE_SECS", 0.03)
+
+    seed_voice_session("s-advance-cancel", [make_question("q1", "python"), make_question("q2", "sql")])
+    state = vtp.VoiceTurnState("s-advance-cancel", fake_ws)
+    tts = _RecordingTTS()
+    state.tts = tts  # type: ignore[assignment]
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_advance() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    state._advance_after_silence = fake_advance  # type: ignore[method-assign]
+
+    state._start_silence_monitor()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert state._silence_advance_task is not None
+
+    state.cancel_silence_monitor()
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+    assert state._silence_advance_task is None
