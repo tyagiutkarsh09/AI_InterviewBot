@@ -24,6 +24,9 @@ def build_answer_evaluation_prompt(
     recent_turns = session.transcript[-6:]
     transcript_text = _format_transcript(recent_turns)
 
+    key_points = question.rubric.get("key_points") if isinstance(question.rubric, dict) else None
+    key_points_text = json.dumps(key_points) if key_points else json.dumps(question.rubric)
+
     return f"""
 <candidate_info>
   Name: {session.candidate_name}
@@ -41,7 +44,7 @@ def build_answer_evaluation_prompt(
   Question: {question.question_text}
   Topic: {question.topic}
   Difficulty: {question.difficulty}
-  Rubric: {json.dumps(question.rubric)}
+  Expected answer key_points: {key_points_text}
 </current_question>
 
 <conversation_history>
@@ -53,10 +56,19 @@ def build_answer_evaluation_prompt(
 </running_scores>
 
 <turn_instruction>
-The candidate just answered the current question. Evaluate their answer, provide a score for the topic "{question.topic}", and determine whether to ask a follow-up or acknowledge and prepare to move on.
+Score the candidate's answer for topic "{question.topic}" by checking it against the
+expected key_points above — reward the points they actually covered, not confident phrasing.
+The score MUST reflect only what the CANDIDATE said: if they did not know, score low even if
+you go on to explain the answer. Never let your own explanation raise the score.
 
-If the answer is comprehensive and sufficient, set action to "acknowledge" and next_state to "questioning" (or "evaluating" if this is the last question).
-If the answer needs elaboration, set action to "follow_up" and include a follow-up question in spoken_text.
+Then decide the next action:
+- If the answer is comprehensive, set action "acknowledge" (or "evaluating" if last question).
+- If a key point is missing and probing is worthwhile, set action "follow_up" and put ONE
+  follow-up in spoken_text that targets the MISSING key point, pitched to a {session.experience_level.value}
+  candidate. Stay within this question's topic — never introduce a topic outside the job description.
+- If the candidate concedes or has been probed enough, acknowledge warmly ("no worries"),
+  optionally give a brief 2-3 sentence explanation built from the key_points (more for juniors,
+  usually skip for seniors), and prepare to move on.
 </turn_instruction>
 
 Candidate's answer: {answer}
