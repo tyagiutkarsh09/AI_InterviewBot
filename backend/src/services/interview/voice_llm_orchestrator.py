@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 
 LOW_CONFIDENCE_THRESHOLD = 0.5
 
+
+def max_follow_ups_for(question: Question) -> int:
+    """1 follow-up per question, 2 for hard ones (code-enforced cap; the LLM decides
+    whether to use the budget). Keeps a 5-question interview from becoming an
+    interrogation."""
+    return 2 if question.difficulty.lower() == "hard" else 1
+
 COMPLETION_MESSAGE = (
     "That concludes our interview. Thank you so much for your time today. "
     "You did great. The evaluation is being processed and you'll receive your "
@@ -264,7 +271,7 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
     # Advance question or follow-up
     action = parsed.action
     follow_up_count = int(voice_data.get("follow_up_count", 0))
-    MAX_FOLLOW_UPS = 2
+    MAX_FOLLOW_UPS = max_follow_ups_for(current_q)
 
     if action in ("acknowledge", "transition") or follow_up_count >= MAX_FOLLOW_UPS:
         # Move to next question
