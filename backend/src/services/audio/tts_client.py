@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 ELEVENLABS_MODEL = "eleven_turbo_v2"
 CHUNK_SIZE = 4096
+TTS_SESSION_CHAR_BUDGET = 50_000
 
 
 async def _send_json(ws: WebSocket, data: dict[str, Any]) -> None:
@@ -34,10 +35,27 @@ async def _send_json(ws: WebSocket, data: dict[str, Any]) -> None:
 class ElevenLabsTTS:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._chars_used = 0
+
+    @property
+    def chars_used(self) -> int:
+        return self._chars_used
+
+    @property
+    def budget_exhausted(self) -> bool:
+        return self._chars_used >= TTS_SESSION_CHAR_BUDGET
 
     async def stream_sentence(self, text: str, ws: WebSocket) -> None:
         """Stream a single sentence as MP3 binary frames then signal completion."""
         if not text.strip():
+            return
+
+        if self._chars_used + len(text) > TTS_SESSION_CHAR_BUDGET:
+            logger.warning(
+                "TTS character budget exhausted (%d/%d) — skipping ElevenLabs",
+                self._chars_used, TTS_SESSION_CHAR_BUDGET,
+            )
+            await _send_json(ws, {"event": "tts_sentence_complete"})
             return
 
         if not self.settings.elevenlabs_api_key:
@@ -77,6 +95,7 @@ class ElevenLabsTTS:
                         await _send_json(ws, {"event": "tts_sentence_complete"})
                         return
 
+                    self._chars_used += len(text)
                     async for chunk in response.aiter_bytes(chunk_size=CHUNK_SIZE):
                         try:
                             await ws.send_bytes(chunk)

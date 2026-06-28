@@ -56,7 +56,13 @@ def build_answer_evaluation_prompt(
 </running_scores>
 
 <turn_instruction>
-Score the candidate's answer for topic "{question.topic}" by checking it against the
+{f"""This is a behavioral/project question — do NOT emit <score_update>. Listen to the
+candidate's story, acknowledge warmly, and move on. No scoring is needed.
+
+Then decide the next action:
+- If the answer is sufficient, set action "acknowledge" (or "evaluating" if last question).
+- If you want to hear more detail, set action "follow_up" and put ONE follow-up in spoken_text.
+- If the candidate concedes or has been probed enough, acknowledge warmly and prepare to move on.""" if question.id.startswith(("behavioral_", "project_")) else f"""Score the candidate's answer for topic "{question.topic}" by checking it against the
 expected key_points above — reward the points they actually covered, not confident phrasing.
 The score MUST reflect only what the CANDIDATE said: if they did not know, score low even if
 you go on to explain the answer. Never let your own explanation raise the score.
@@ -68,7 +74,7 @@ Then decide the next action:
   candidate. Stay within this question's topic — never introduce a topic outside the job description.
 - If the candidate concedes or has been probed enough, acknowledge warmly ("no worries"),
   optionally give a brief 2-3 sentence explanation built from the key_points (more for juniors,
-  usually skip for seniors), and prepare to move on.
+  usually skip for seniors), and prepare to move on."""}
 </turn_instruction>
 
 Candidate's answer: {answer}
@@ -143,12 +149,14 @@ choose the ONE action that fits:
   worth probing. Ask ONE focused follow-up. Do NOT emit <score_update> yet.
 
 - acknowledge_advance: the candidate has answered (or conceded, or been probed
-  enough). This is the ONLY action that records a score. Keep spoken_text to a brief
-  acknowledgement — no questions. Emit <score_update> for topic "{question.topic}"
+  enough). Keep spoken_text to a brief acknowledgement — no questions.{f"""
+  This is a behavioral/project question — do NOT emit <score_update>. Just acknowledge
+  warmly and move on.""" if question.id.startswith(("behavioral_", "project_")) else f"""
+  This is the ONLY action that records a score. Emit <score_update> for topic "{question.topic}"
   scoring the WHOLE exchange against the key_points listed above; the score must
   reflect only what the CANDIDATE said. Do NOT let your own explanation inflate it.
   Calibrate depth of expectation to a {session.experience_level.value} candidate —
-  award partial credit for direction-correct answers.
+  award partial credit for direction-correct answers."""}
 
 Never emit <score_update> on any action other than acknowledge_advance."""
 

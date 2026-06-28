@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["voice"])
 
 HEARTBEAT_INTERVAL = 30
+SESSION_MAX_DURATION_SECS = 45 * 60  # 45 minutes hard cap
+MAX_CONSECUTIVE_SILENCE_STRIKES = 3
 ALGORITHM = "HS256"
 
 STT_LOW_CONFIDENCE = 0.50   # below this: ask candidate to repeat
@@ -42,6 +44,7 @@ MAX_REPEAT_REQUESTS = 1     # after this many consecutive low-confidence events,
 DEBOUNCE_SECS = 2.0          # seconds to wait after last speech_final before flushing to LLM
 DEBOUNCE_COMPLETE_SECS = 0.8 # shortened debounce when user signals answer completion
 DEBOUNCE_INCOMPLETE_SECS = 5.0  # extended debounce when transcript ends mid-thought
+SPEECH_END_FINAL_GRACE_SECS = 0.35  # let Deepgram deliver a final event before fallback
 WAIT_REQUEST_ACK = "Of course, take your time. I'll be here when you're ready."
 
 _COMPLETION_PHRASES = (
@@ -141,6 +144,23 @@ async def _heartbeat_loop(ws: WebSocket, stop: asyncio.Event) -> None:
             break
 
 
+async def _session_timeout(ws: WebSocket, session_id: str, stop: asyncio.Event) -> None:
+    """Hard cap on session duration — closes the WS after SESSION_MAX_DURATION_SECS."""
+    await asyncio.sleep(SESSION_MAX_DURATION_SECS)
+    if stop.is_set():
+        return
+    logger.warning("Session max duration reached session=%s — force closing", session_id)
+    stop.set()
+    await _send_json(ws, {
+        "event": "error",
+        "message": "Interview session timed out (45 minute limit).",
+    })
+    try:
+        await ws.close(code=1000)
+    except Exception:
+        pass
+
+
 @router.websocket("/ws/interview/voice/{session_id}")
 async def voice_interview_ws(
     websocket: WebSocket,
@@ -176,6 +196,8 @@ async def voice_interview_ws(
     deepgram: Optional[DeepgramManager] = None
     stop_event = asyncio.Event()
     accumulated_text: list[str] = []
+    latest_interim_text: list[str] = [""]
+    promoted_interim_text: list[str] = [""]
     debounce_task: list[Optional[asyncio.Task]] = [None]  # list for mutability in closure
     soft_confirm_pending: list[bool] = [False]
     repeat_request_count: list[int] = [0]
@@ -202,7 +224,23 @@ async def voice_interview_ws(
             "confidence": round(confidence, 3),
         })
 
+        if not is_final:
+            latest_interim_text[0] = text.strip()
+            return
+
         if is_final:
+            promoted_text = promoted_interim_text[0]
+            if promoted_text and (
+                text == promoted_text
+                or text.startswith(promoted_text)
+                or promoted_text.startswith(text)
+            ):
+                latest_interim_text[0] = ""
+                promoted_interim_text[0] = ""
+                return
+            latest_interim_text[0] = ""
+            promoted_interim_text[0] = ""
+
             if soft_confirm_pending[0]:
                 # Candidate responded after a soft-confirm — accept regardless of confidence
                 soft_confirm_pending[0] = False
@@ -272,6 +310,9 @@ async def voice_interview_ws(
             debounce_task[0] = asyncio.create_task(_flush_accumulated())
 
     async def flush_accumulated_now() -> None:
+        if SPEECH_END_FINAL_GRACE_SECS > 0:
+            await asyncio.sleep(SPEECH_END_FINAL_GRACE_SECS)
+
         if debounce_task[0] is not None and not debounce_task[0].done():
             try:
                 if accumulated_text:
@@ -282,6 +323,13 @@ async def voice_interview_ws(
                     return
             except asyncio.CancelledError:
                 pass
+
+        if not accumulated_text and latest_interim_text[0]:
+            accumulated_text.append(latest_interim_text[0])
+            promoted_interim_text[0] = latest_interim_text[0]
+            latest_interim_text[0] = ""
+        elif accumulated_text:
+            promoted_interim_text[0] = ""
 
         if not accumulated_text:
             return
@@ -298,6 +346,7 @@ async def voice_interview_ws(
     await deepgram.start()
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, stop_event))
+    timeout_task = asyncio.create_task(_session_timeout(websocket, session_id, stop_event))
 
     await _send_json(websocket, {
         "event": "connected",
@@ -379,6 +428,7 @@ async def voice_interview_ws(
 
         stop_event.set()
         heartbeat_task.cancel()
+        timeout_task.cancel()
         if debounce_task[0] is not None and not debounce_task[0].done():
             debounce_task[0].cancel()
         if deepgram:
@@ -414,6 +464,8 @@ async def _handle_control(
 
     elif event == "speech_end":
         # Don't set PROCESSING — let the debounce timer decide when processing starts.
+        if flush_accumulated_now is not None:
+            await flush_accumulated_now()
         await _send_json(ws, {"event": "ack", "for": "speech_end"})
         return True
 

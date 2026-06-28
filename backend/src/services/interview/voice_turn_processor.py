@@ -38,6 +38,7 @@ SILENCE_STRIKE_SECS = 60    # strike + advance to next question
 SILENCE_GRACE_SECS = 30     # accept-thinking grace — delays first nudge when set
 COMPLETION_WAIT_TIMEOUT_SECS = 90.0
 COMPLETION_POLL_INTERVAL_SECS = 0.25
+MAX_CONSECUTIVE_SILENCE_STRIKES = 3
 
 # Spoken silence check-ins (deterministic — never LLM-generated).
 SILENCE_PROMPT_1 = "Take your time — I'm here whenever you're ready."
@@ -277,16 +278,32 @@ class VoiceTurnState:
             await asyncio.sleep(SILENCE_STRIKE_SECS - SILENCE_CHECKIN_SECS)
             strikes = increment_voice_field(self.session_id, "silence_strikes")
             logger.info("Silence strike %d session=%s", strikes, self.session_id)
+
+            if strikes >= MAX_CONSECUTIVE_SILENCE_STRIKES:
+                logger.warning(
+                    "Max silence strikes (%d) reached session=%s — auto-ending",
+                    strikes, self.session_id,
+                )
+                await _send_json(self.ws, {
+                    "event": "silence_strike",
+                    "count": strikes,
+                    "action": "end_session",
+                })
+                await _send_json(self.ws, {
+                    "event": "error",
+                    "message": "Session ended due to extended inactivity.",
+                })
+                try:
+                    await self.ws.close(code=1000)
+                except Exception:
+                    pass
+                return
+
             await _send_json(self.ws, {
                 "event": "silence_strike",
                 "count": strikes,
                 "action": "advance_question",
             })
-            # Run the advance in its own task so this coroutine returns cleanly:
-            # the advance's stream_response starts a fresh silence monitor, which
-            # would otherwise cancel this still-running coroutine mid-await and
-            # cut off the next question's audio. Keep the handle so speech_start
-            # and disconnect cleanup can still cancel the pending advance.
             self._track_task(
                 "_silence_advance_task",
                 asyncio.create_task(self._advance_after_silence()),
@@ -332,6 +349,9 @@ async def process_voice_turn(
     # Handle barge-in: if bot was speaking when speech detected
     if turn_state.bot_speaking:
         await turn_state.handle_barge_in()
+
+    # Real speech resets the consecutive silence strike counter
+    set_voice_field(session_id, "silence_strikes", 0)
 
     session_data = get_voice_session(session_id)
     if session_data is None:

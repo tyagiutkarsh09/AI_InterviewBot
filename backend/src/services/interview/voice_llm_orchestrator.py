@@ -306,7 +306,10 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         # Gather current running scores from voice_data (fresh at top of turn).
         scores: dict[str, float] = json.loads(voice_data.get("running_scores", "{}"))
 
-        if parsed.score is not None:
+        # Behavioral and project-scope questions are conversational — no scoring.
+        _skip_scoring = current_q.id.startswith(("behavioral_", "project_"))
+
+        if not _skip_scoring and parsed.score is not None:
             if parsed.confidence is not None and parsed.confidence < LOW_CONFIDENCE_THRESHOLD:
                 increment_voice_field(session_id, "low_confidence_turns")
                 logger.warning(
@@ -331,7 +334,8 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
                     set_voice_field(session_id, "llm_confidence_by_topic", json.dumps(llm_confs))
 
         # Clamp 2: no silent unscored advance — always surface missing scores.
-        if current_q.topic not in scores:
+        # (Behavioral/project questions are intentionally unscored, so skip the warning.)
+        if not _skip_scoring and current_q.topic not in scores:
             unscored: list = json.loads(voice_data.get("unscored_topics", "[]"))
             unscored.append(current_q.topic)
             set_voice_field(session_id, "unscored_topics", json.dumps(unscored))

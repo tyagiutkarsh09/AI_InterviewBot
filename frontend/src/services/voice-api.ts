@@ -8,6 +8,13 @@ import { ApiClientError } from "@/services/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+function logVoiceApiDebug(message: string, context: Record<string, unknown> = {}) {
+  console.debug(`[voice-api] ${message}`, {
+    at: new Date().toISOString(),
+    ...context,
+  });
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
@@ -41,10 +48,20 @@ const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? "change-me-admin-key"
 export async function previewPlan(
   form: FormData
 ): Promise<PlanPreviewResponse> {
+  const startedAt = performance.now();
+  logVoiceApiDebug("preview-plan-request", {
+    url: `${API_BASE}/api/v1/voice/plan/preview`,
+    formKeys: Array.from(form.keys()),
+  });
   const res = await fetch(`${API_BASE}/api/v1/voice/plan/preview`, {
     method: "POST",
     headers: { "X-Admin-Key": ADMIN_KEY },
     body: form,
+  });
+  logVoiceApiDebug("preview-plan-response", {
+    status: res.status,
+    ok: res.ok,
+    elapsedMs: Math.round(performance.now() - startedAt),
   });
   if (!res.ok) {
     let detail: string | undefined;
@@ -56,7 +73,15 @@ export async function previewPlan(
     }
     throw new ApiClientError(`HTTP ${res.status}`, res.status, detail);
   }
-  return res.json() as Promise<PlanPreviewResponse>;
+  const body = (await res.json()) as PlanPreviewResponse;
+  logVoiceApiDebug("preview-plan-payload", {
+    draftId: body.draft_id,
+    roleTitle: body.role_title,
+    questionCount: body.questions.length,
+    usableCount: body.usable_count,
+    needsConfirmation: body.needs_confirmation,
+  });
+  return body;
 }
 
 export async function startFromDraft(

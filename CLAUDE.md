@@ -25,10 +25,6 @@ Before adding code, read exports, immediate callers, shared utilities.
 If unsure why existing code is structured a certain way, ask.
 Specifically: read `backend/src/prompts/system_prompt.txt` before changing any LLM behavior. Read `response_parser.py` before touching XML response handling.
 
-### 5 — Use the Model for Judgment Calls Only
-LLM for: classification, drafting, summarization, extraction, evaluation.
-NOT for: routing, retries, status-code handling, deterministic transforms.
-If code can answer, code answers. This applies to Claude Code's work AND to the interview bot's own LLM calls.
 
 ### 6 — Surface Conflicts, Don't Average Them
 If two patterns contradict, pick one (more recent / more tested).

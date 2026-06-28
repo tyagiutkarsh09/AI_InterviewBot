@@ -9,6 +9,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -172,11 +173,29 @@ async def preview_plan(
             detail=f"num_questions must be between {MIN_QUESTIONS} and {MAX_QUESTIONS}.",
         )
 
+    request_started = time.perf_counter()
+    logger.info(
+        "Voice plan preview started jd=%s resume=%s role=%s level=%s requested=%d",
+        jd.filename or "<missing>",
+        resume.filename if resume is not None else "<none>",
+        job_role,
+        experience_level.value,
+        num_questions,
+    )
+
     jd_bytes = await jd.read()
     try:
         # Offloaded to a thread: sync pypdf/docx + the sync Anthropic client would
         # otherwise block the single event loop and freeze every concurrent session.
+        jd_extract_started = time.perf_counter()
         jd_text = await asyncio.to_thread(extract_jd_text, jd.filename or "", jd_bytes)
+        logger.info(
+            "Voice plan preview jd extracted jd=%s bytes=%d chars=%d elapsed_ms=%d",
+            jd.filename or "<missing>",
+            len(jd_bytes),
+            len(jd_text),
+            round((time.perf_counter() - jd_extract_started) * 1000),
+        )
     except JDExtractError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -187,8 +206,16 @@ async def preview_plan(
     if resume is not None:
         resume_bytes = await resume.read()
         try:
+            resume_extract_started = time.perf_counter()
             resume_text = await asyncio.to_thread(
                 extract_jd_text, resume.filename or "", resume_bytes
+            )
+            logger.info(
+                "Voice plan preview resume extracted resume=%s bytes=%d chars=%d elapsed_ms=%d",
+                resume.filename or "<missing>",
+                len(resume_bytes),
+                len(resume_text),
+                round((time.perf_counter() - resume_extract_started) * 1000),
             )
         except JDExtractError:
             raise HTTPException(
@@ -197,8 +224,23 @@ async def preview_plan(
             )
 
     try:
+        planner_started = time.perf_counter()
+        logger.info(
+            "Voice plan preview planner started role=%s level=%s requested=%d jd_chars=%d resume_chars=%d",
+            job_role,
+            experience_level.value,
+            num_questions,
+            len(jd_text),
+            len(resume_text or ""),
+        )
         draft = await asyncio.to_thread(
             plan_interview, jd_text, resume_text, job_role, experience_level, num_questions
+        )
+        logger.info(
+            "Voice plan preview planner finished role=%s questions=%d elapsed_ms=%d",
+            draft.role_title,
+            len(draft.questions),
+            round((time.perf_counter() - planner_started) * 1000),
         )
     except PlannerError as exc:
         logger.error("Voice planner failed: %s", exc)
@@ -220,6 +262,14 @@ async def preview_plan(
         "job_role": job_role,
         "experience_level": experience_level.value,
     })
+    logger.info(
+        "Voice plan preview completed draft_id=%s usable=%d requested=%d shortfall=%s total_elapsed_ms=%d",
+        draft_id,
+        usable_count,
+        num_questions,
+        shortfall,
+        round((time.perf_counter() - request_started) * 1000),
+    )
     return PlanPreviewResponse(
         draft_id=draft_id,
         role_title=draft.role_title,

@@ -29,6 +29,13 @@ const DIFFICULTY_COLORS: Record<string, string> = {
 
 type PagePhase = "form" | "generating" | "preview" | "starting";
 
+function logPlanDebug(message: string, context: Record<string, unknown> = {}) {
+  console.debug(`[voice-plan] ${message}`, {
+    at: new Date().toISOString(),
+    ...context,
+  });
+}
+
 export default function VoiceStartPage() {
   const router = useRouter();
 
@@ -68,12 +75,36 @@ export default function VoiceStartPage() {
 
     setPhase("generating");
     setError(null);
+    const startedAt = performance.now();
+    logPlanDebug("generate-clicked", {
+      jobRole: jobRole.trim() || "Role from JD",
+      experienceLevel,
+      numQuestions,
+      jdFileName: jdFile.name,
+      jdFileSize: jdFile.size,
+      resumeFileName: resumeFile?.name ?? null,
+      resumeFileSize: resumeFile?.size ?? null,
+    });
 
     try {
       const result = await previewPlan(buildFormData());
+      logPlanDebug("generate-succeeded", {
+        elapsedMs: Math.round(performance.now() - startedAt),
+        draftId: result.draft_id,
+        questionCount: result.questions.length,
+        usableCount: result.usable_count,
+        needsConfirmation: result.needs_confirmation,
+      });
       setPreview(result);
       setPhase("preview");
     } catch (err) {
+      logPlanDebug("generate-failed", {
+        elapsedMs: Math.round(performance.now() - startedAt),
+        error:
+          err instanceof Error
+            ? { name: err.name, message: err.message }
+            : { value: String(err) },
+      });
       if (err instanceof ApiClientError) {
         setError(err.detail ?? err.message);
       } else {
@@ -86,12 +117,35 @@ export default function VoiceStartPage() {
   const handleRegenerate = async () => {
     setPhase("generating");
     setError(null);
+    const startedAt = performance.now();
+    logPlanDebug("regenerate-clicked", {
+      jobRole: jobRole.trim() || "Role from JD",
+      experienceLevel,
+      numQuestions,
+      jdFileName: jdFile?.name ?? null,
+      resumeFileName: resumeFile?.name ?? null,
+      previousDraftId: preview?.draft_id ?? null,
+    });
 
     try {
       const result = await previewPlan(buildFormData());
+      logPlanDebug("regenerate-succeeded", {
+        elapsedMs: Math.round(performance.now() - startedAt),
+        draftId: result.draft_id,
+        questionCount: result.questions.length,
+        usableCount: result.usable_count,
+        needsConfirmation: result.needs_confirmation,
+      });
       setPreview(result);
       setPhase("preview");
     } catch (err) {
+      logPlanDebug("regenerate-failed", {
+        elapsedMs: Math.round(performance.now() - startedAt),
+        error:
+          err instanceof Error
+            ? { name: err.name, message: err.message }
+            : { value: String(err) },
+      });
       if (err instanceof ApiClientError) {
         setError(err.detail ?? err.message);
       } else {

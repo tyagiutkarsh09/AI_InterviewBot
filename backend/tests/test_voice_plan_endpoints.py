@@ -9,6 +9,7 @@ called directly (the codebase's convention) so auth/multipart plumbing is out of
 """
 import io
 import json
+import logging
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -60,6 +61,24 @@ async def test_preview_returns_draft_and_questions(monkeypatch):
     assert len(resp.questions) == 5
     assert resp.needs_confirmation is False
     assert resp.role_title == "Sr ME"
+
+
+@pytest.mark.asyncio
+async def test_preview_logs_timing_progress(monkeypatch, caplog):
+    monkeypatch.setattr(voice_api, "extract_jd_text", lambda fn, data: "JD TEXT")
+    monkeypatch.setattr(voice_api, "plan_interview", lambda *a, **k: _draft(5))
+
+    with caplog.at_level(logging.INFO):
+        await voice_api.preview_plan(
+            jd=_upload(), resume=None, job_role="ME",
+            experience_level=ExperienceLevel.MID, num_questions=5,
+        )
+
+    assert "Voice plan preview started" in caplog.text
+    assert "Voice plan preview jd extracted" in caplog.text
+    assert "Voice plan preview planner started" in caplog.text
+    assert "Voice plan preview planner finished" in caplog.text
+    assert "Voice plan preview completed" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -151,6 +151,8 @@ class DeepgramSTTStream:
             # Pass is_final=True so voice_ws.py accumulates it alongside
             # speech_final segments — preventing multi-sentence truncation.
             await self.on_transcript(text, True, confidence)
+        else:
+            await self.on_transcript(text, False, confidence)
 
     async def _on_error(self, *args: Any, **_: Any) -> None:
         error = args[0] if args else "unknown"

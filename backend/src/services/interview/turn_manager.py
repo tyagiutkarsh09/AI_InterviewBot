@@ -48,7 +48,8 @@ async def process_answer(session: SessionState, answer_text: str) -> TurnResult:
         session=session,
     )
 
-    if llm_result.score is not None:
+    _skip_scoring = current_q.id.startswith(("behavioral_", "project_"))
+    if not _skip_scoring and llm_result.score is not None:
         session.running_scores[current_q.topic] = llm_result.score
 
     if llm_result.flags:

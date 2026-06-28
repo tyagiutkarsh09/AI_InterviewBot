@@ -150,6 +150,41 @@ async def test_speech_end_does_not_set_processing(fake_ws: FakeWebSocket):
 
 
 @pytest.mark.asyncio
+async def test_speech_end_flushes_buffered_transcript_without_waiting_for_more_audio(
+    fake_ws: FakeWebSocket,
+):
+    """When browser VAD reports end-of-speech, any buffered transcript must be
+    handed off to the turn processor. Otherwise the bot waits forever if
+    Deepgram does not emit another final event until the candidate speaks again.
+    """
+    session_id = "s-speech-end-flush"
+    seed_voice_session(session_id, [make_question("q1", "python")])
+    set_voice_field(session_id, "state", "CANDIDATE_SPEAKING")
+
+    flushed = {"called": False}
+
+    async def flush_accumulated_now():
+        flushed["called"] = True
+
+    await _handle_control(
+        fake_ws,
+        session_id,
+        {"event": "speech_end"},
+        [None],
+        flush_accumulated_now,
+    )
+
+    assert flushed["called"], (
+        "speech_end must flush buffered transcript; waiting only for a later "
+        "Deepgram final event strands the turn until the candidate speaks again"
+    )
+    session = get_voice_session(session_id)
+    assert session["state"] != "PROCESSING", (
+        "speech_end itself should delegate to the flush path, not directly set PROCESSING"
+    )
+
+
+@pytest.mark.asyncio
 async def test_speech_start_cancels_silence_monitor(fake_ws: FakeWebSocket):
     """If the silence monitor runs while the user is actively speaking, it
     sends a 'Take your time' prompt mid-answer — confusing and disruptive."""
