@@ -4,16 +4,17 @@ Order: [core...] -> [jd...] -> behavioral -> project_deepdive.
 Fails loud if the bank cannot supply the required core count or there are not
 enough JD question ideas.
 """
-from src.services.interview.plan_math import compute_split, compute_voice_split
+from src.services.interview.plan_math import compute_split
 from src.services.interview.special_questions import (
     build_behavioral_question,
     build_jd_question,
+    build_planned_question,
     build_project_question,
-    build_resume_question,
 )
 from src.services.questions.question_bank import get_question_set
 from src.types.config import InterviewPlan, JDSummary
 from src.types.interview import ExperienceLevel, Question
+from src.types.planning import InterviewPlanDraft
 
 
 class InsufficientQuestionsError(RuntimeError):
@@ -67,42 +68,19 @@ def order_easy_first(questions: list[Question]) -> list[Question]:
     return lead + rest
 
 
-def build_voice_plan(
-    role: str,
-    experience_level: ExperienceLevel,
-    jd_summary: JDSummary,
-    jd_question_ideas: list[dict],
-    resume_questions: list[dict],
-    technical_count: int,
-    core_ratio: float,
-) -> InterviewPlan:
-    """Assemble the VOICE interview plan (additive model).
+def assemble_voice_plan(draft: InterviewPlanDraft, usable_count: int) -> InterviewPlan:
+    """Draft -> frozen plan: easy-first technical (jd+resume) -> behavioral -> project.
 
-    Order: [easy-first technical (core + optional jd)] -> [resume] -> behavioral
-    -> project. technical_count counts ONLY technical questions; resume/behavioral/
-    project are additive. JD ideas are optional (empty -> bank-only technical).
+    usable_count caps the technical questions (the floor math decides it). Behavioral
+    is fixed; the project deep-dive is grounded in the draft's project_question_text.
     """
-    has_jd = bool(jd_question_ideas)
-    core_count, jd_count = compute_voice_split(technical_count, core_ratio, has_jd)
-
-    core_qs = get_question_set(role, experience_level, jd_summary.skills, core_count)
-    if len(core_qs) < core_count:
-        raise InsufficientQuestionsError(
-            f"Bank supplied {len(core_qs)} core questions, need {core_count}"
-        )
-    core_qs = core_qs[:core_count]
-
-    jd_qs = [
-        build_jd_question(idea["question_text"], idea.get("topic", ""), index=i)
-        for i, idea in enumerate(jd_question_ideas[:jd_count])
+    technical = [
+        build_planned_question(pq, index=i)
+        for i, pq in enumerate(draft.questions[:usable_count])
     ]
-
-    technical = order_easy_first(core_qs + jd_qs)
-
-    resume_qs = [
-        build_resume_question(idea["question_text"], idea.get("topic", ""), index=i)
-        for i, idea in enumerate(resume_questions)
+    technical = order_easy_first(technical)
+    questions = technical + [
+        build_behavioral_question(),
+        build_project_question(draft.project_question_text),
     ]
-
-    questions = technical + resume_qs + [build_behavioral_question(), build_project_question()]
     return InterviewPlan(questions=questions)

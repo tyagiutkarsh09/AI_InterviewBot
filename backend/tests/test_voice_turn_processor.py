@@ -40,6 +40,34 @@ async def test_stream_response_plays_sentences_sequentially(fake_ws: FakeWebSock
 
 
 @pytest.mark.asyncio
+async def test_stream_response_waits_for_playback_ack_before_candidate_turn(fake_ws: FakeWebSocket):
+    """Server-side TTS streaming completion is not browser playback completion.
+    The candidate turn and silence monitor must wait for the frontend's
+    tts_complete acknowledgement.
+    """
+    seed_voice_session("s-playback-ack", [])
+    state = VoiceTurnState("s-playback-ack", fake_ws)
+
+    class NoopTTS:
+        async def stream_sentence(self, text: str, ws) -> None:
+            return None
+
+    state.tts = NoopTTS()  # type: ignore[assignment]
+
+    await state.stream_response("Tell me about Creo.", entry_type="question")
+
+    assert state._silence_task is None
+    assert not any(
+        message.get("event") == "turn" and message.get("speaker") == "candidate"
+        for message in fake_ws.json_messages
+    )
+    assert any(
+        message.get("event") == "tts_turn_complete"
+        for message in fake_ws.json_messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_barge_in_cancels_tts_and_opens_mic(fake_ws: FakeWebSocket):
     """A barge-in must cancel the in-flight TTS, reopen the mic, and count it —
     without crashing the turn task."""
@@ -202,6 +230,90 @@ async def test_silence_monitor_triggers_advance_and_strike(fake_ws, monkeypatch)
 
     assert int(get_voice_session("s-trig")["silence_strikes"]) == 1
     assert any(m.get("event") == "silence_strike" for m in fake_ws.json_messages)
+
+
+def test_silence_prompt_2_does_not_contain_dropped_wording():
+    """SILENCE_PROMPT_2 must NOT ask about 'running into' issues.
+
+    That phrasing assumed the candidate was stuck rather than thinking, which
+    is a bad signal to send during an interview. This test locks in the removal
+    so it cannot regress unnoticed.
+    """
+    assert "running into" not in vtp.SILENCE_PROMPT_2, (
+        "SILENCE_PROMPT_2 still contains the dropped 'running into' phrasing"
+    )
+    assert "issues" not in vtp.SILENCE_PROMPT_2, (
+        "SILENCE_PROMPT_2 still contains the dropped 'issues' phrasing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_grace_mode_delays_first_nudge(fake_ws, monkeypatch):
+    """Grace mode must delay the first nudge by SILENCE_GRACE_SECS, not by
+    SILENCE_PROMPT_SECS. If it used the normal timing, a candidate who asked
+    for thinking time would be interrupted as quickly as one who said nothing.
+
+    Monkeypatch SILENCE_GRACE_SECS >> SILENCE_PROMPT_SECS, then start the
+    monitor with grace=True and assert the first nudge has not fired before
+    SILENCE_GRACE_SECS elapses.
+    """
+    monkeypatch.setattr(vtp, "SILENCE_PROMPT_SECS", 0.01)  # normal: fires in 10ms
+    monkeypatch.setattr(vtp, "SILENCE_GRACE_SECS", 0.08)   # grace: fires in 80ms
+    # Keep second/third tiers far away so they don't fire during this test
+    monkeypatch.setattr(vtp, "SILENCE_CHECKIN_SECS", 100)
+    monkeypatch.setattr(vtp, "SILENCE_STRIKE_SECS", 200)
+
+    seed_voice_session("s-grace", [make_question("q1", "python")])
+    state = vtp.VoiceTurnState("s-grace", fake_ws)
+    tts = _RecordingTTS()
+    state.tts = tts  # type: ignore[assignment]
+
+    state._start_silence_monitor(grace=True)
+
+    # Wait past SILENCE_PROMPT_SECS (0.01) but before SILENCE_GRACE_SECS (0.08)
+    await asyncio.sleep(0.04)
+    assert tts.spoken == [], (
+        "first nudge fired before SILENCE_GRACE_SECS — grace mode not working"
+    )
+
+    # Wait past SILENCE_GRACE_SECS
+    await asyncio.sleep(0.07)  # total ~0.11s > 0.08s
+    assert "Take your time" in " ".join(tts.spoken), (
+        "first nudge never fired after SILENCE_GRACE_SECS elapsed"
+    )
+
+    state.cancel_silence_monitor()
+
+
+@pytest.mark.asyncio
+async def test_open_candidate_turn_after_playback_honors_grace_pending(fake_ws):
+    """open_candidate_turn_after_playback must start the monitor in grace mode
+    when silence_grace_pending is set, and clear the flag immediately.
+
+    If the flag is not cleared, every subsequent tts_complete for this session
+    would start the monitor in grace mode — a silent sticky bug.
+    """
+    from src.services.audio.voice_session import set_voice_field
+
+    session_id = "s-grace-pending"
+    seed_voice_session(session_id, [make_question("q1", "python")])
+    set_voice_field(session_id, "silence_grace_pending", "1")
+
+    state = vtp.VoiceTurnState(session_id, fake_ws)
+
+    state.open_candidate_turn_after_playback()
+
+    # Monitor must be running
+    assert state._silence_task is not None, "silence monitor was not started"
+
+    # Flag must be cleared
+    from src.services.audio.voice_session import get_voice_session as _get
+    session_data = _get(session_id)
+    assert not session_data.get("silence_grace_pending"), (
+        "silence_grace_pending was not cleared — grace mode would stick across turns"
+    )
+
+    state.cancel_silence_monitor()
 
 
 @pytest.mark.asyncio

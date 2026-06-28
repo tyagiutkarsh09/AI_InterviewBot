@@ -16,9 +16,11 @@ from src.routes.voice_ws import (
     DEBOUNCE_INCOMPLETE_SECS,
     DEBOUNCE_SECS,
     STT_LOW_CONFIDENCE,
+    _handle_wait_request,
     _handle_control,
     _looks_complete,
     _looks_incomplete,
+    _looks_wait_request,
 )
 from src.services.audio.voice_session import get_voice_session, set_voice_field
 
@@ -77,6 +79,25 @@ class TestLooksIncomplete:
         assert not _looks_incomplete("")
 
 
+class TestLooksWaitRequest:
+    """Explicit wait requests must not be treated as completed answers."""
+
+    def test_transcript_wait_request_is_detected(self):
+        assert _looks_wait_request(
+            "Yeah. Give me twenty five seconds to form my answer."
+        )
+
+    def test_common_wait_phrases_are_detected(self):
+        assert _looks_wait_request("Let me think for a moment.")
+        assert _looks_wait_request("Can I have 20 seconds?")
+        assert _looks_wait_request("I need some time to structure this.")
+        assert _looks_wait_request("Hold on, I am thinking.")
+
+    def test_answer_about_waiting_is_not_detected(self):
+        assert not _looks_wait_request("The fixture had to wait for the mold to cool.")
+        assert not _looks_wait_request("We reduced the cycle time by twenty seconds.")
+
+
 # ---- Integration tests for debounce and control ----
 
 
@@ -129,6 +150,41 @@ async def test_speech_end_does_not_set_processing(fake_ws: FakeWebSocket):
 
 
 @pytest.mark.asyncio
+async def test_speech_end_flushes_buffered_transcript_without_waiting_for_more_audio(
+    fake_ws: FakeWebSocket,
+):
+    """When browser VAD reports end-of-speech, any buffered transcript must be
+    handed off to the turn processor. Otherwise the bot waits forever if
+    Deepgram does not emit another final event until the candidate speaks again.
+    """
+    session_id = "s-speech-end-flush"
+    seed_voice_session(session_id, [make_question("q1", "python")])
+    set_voice_field(session_id, "state", "CANDIDATE_SPEAKING")
+
+    flushed = {"called": False}
+
+    async def flush_accumulated_now():
+        flushed["called"] = True
+
+    await _handle_control(
+        fake_ws,
+        session_id,
+        {"event": "speech_end"},
+        [None],
+        flush_accumulated_now,
+    )
+
+    assert flushed["called"], (
+        "speech_end must flush buffered transcript; waiting only for a later "
+        "Deepgram final event strands the turn until the candidate speaks again"
+    )
+    session = get_voice_session(session_id)
+    assert session["state"] != "PROCESSING", (
+        "speech_end itself should delegate to the flush path, not directly set PROCESSING"
+    )
+
+
+@pytest.mark.asyncio
 async def test_speech_start_cancels_silence_monitor(fake_ws: FakeWebSocket):
     """If the silence monitor runs while the user is actively speaking, it
     sends a 'Take your time' prompt mid-answer — confusing and disruptive."""
@@ -151,6 +207,113 @@ async def test_speech_start_cancels_silence_monitor(fake_ws: FakeWebSocket):
         "Silence monitor should be cancelled when user starts speaking"
 
 
+@pytest.mark.asyncio
+async def test_tts_complete_opens_candidate_turn_and_starts_silence_monitor(
+    fake_ws: FakeWebSocket,
+):
+    """The silence timer starts only after browser playback completion."""
+    session_id = "s-tts-complete"
+    seed_voice_session(session_id, [make_question("q1", "python")])
+
+    from src.services.interview.voice_turn_processor import get_or_create_turn_state
+
+    turn_state = get_or_create_turn_state(session_id, fake_ws)
+    assert turn_state._silence_task is None
+
+    await _handle_control(fake_ws, session_id, {"event": "tts_complete"}, [None])
+
+    session = get_voice_session(session_id)
+    assert session["state"] == "WAITING_FOR_CANDIDATE"
+    assert turn_state._silence_task is not None
+    turn_state.cancel_silence_monitor()
+    assert any(
+        message.get("event") == "turn" and message.get("speaker") == "candidate"
+        for message in fake_ws.json_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_request_does_not_advance_or_score(fake_ws: FakeWebSocket):
+    """A candidate asking for thinking time is not an answer. It must not be
+    evaluated by the LLM or advance the active question."""
+    session_id = "s-wait-request"
+    seed_voice_session(
+        session_id,
+        [make_question("q1", "creo"), make_question("q2", "gdt")],
+    )
+
+    from src.services.interview.voice_turn_processor import get_or_create_turn_state
+
+    class RecordingTTS:
+        def __init__(self) -> None:
+            self.spoken: list[str] = []
+
+        async def stream_sentence(self, text: str, ws) -> None:
+            self.spoken.append(text)
+
+    turn_state = get_or_create_turn_state(session_id, fake_ws)
+    tts = RecordingTTS()
+    turn_state.tts = tts  # type: ignore[assignment]
+
+    await _handle_wait_request(
+        fake_ws,
+        session_id,
+        "Yeah. Give me twenty five seconds to form my answer.",
+    )
+
+    session = get_voice_session(session_id)
+    assert int(session["current_question_idx"]) == 0
+    assert int(session["turn_count"]) == 0
+    assert session["state"] == "WAITING_FOR_CANDIDATE"
+    assert "take your time" in " ".join(tts.spoken).lower()
+    assert any(
+        message.get("event") == "turn" and message.get("speaker") == "candidate"
+        for message in fake_ws.json_messages
+    )
+
+    # _handle_wait_request now leaves a live silence monitor running (to avoid
+    # dead air if the candidate never speaks again). Cancel it so pytest does
+    # not see an orphaned task and raise a RuntimeWarning.
+    turn_state.cancel_silence_monitor()
+
+
+@pytest.mark.asyncio
+async def test_wait_request_starts_silence_monitor(fake_ws: FakeWebSocket):
+    """After _handle_wait_request the silence monitor must be running.
+
+    Regression guard for the dead-air-after-thinking bug: before the fix,
+    wait-request cancelled the monitor and never restarted it, so a candidate
+    who asked for thinking time and then stayed silent would sit in dead air
+    forever — never nudged, never advanced.
+    """
+    session_id = "s-wait-monitor"
+    seed_voice_session(
+        session_id,
+        [make_question("q1", "creo"), make_question("q2", "gdt")],
+    )
+
+    from src.services.interview.voice_turn_processor import get_or_create_turn_state
+
+    class NoopTTS:
+        async def stream_sentence(self, text: str, ws) -> None:
+            return None
+
+    turn_state = get_or_create_turn_state(session_id, fake_ws)
+    turn_state.tts = NoopTTS()  # type: ignore[assignment]
+
+    await _handle_wait_request(
+        fake_ws,
+        session_id,
+        "Give me a moment to think.",
+    )
+
+    assert turn_state._silence_task is not None, (
+        "silence monitor must be running after a wait request — "
+        "without it the candidate sits in dead air if they never speak again"
+    )
+    turn_state.cancel_silence_monitor()
+
+
 # ---- Tests for adaptive debounce timing ----
 
 
@@ -170,10 +333,8 @@ class TestAdaptiveDebounce:
             "Incomplete phrase debounce should be longer than standard"
 
     def test_standard_debounce_is_reasonable(self):
-        assert DEBOUNCE_SECS >= 2.0, \
-            "Standard debounce too short for interview pauses"
-        assert DEBOUNCE_SECS <= 5.0, \
-            "Standard debounce too long — bot will feel unresponsive"
+        assert DEBOUNCE_SECS == 2.0, \
+            "Standard debounce should match the configured 2-second response wait"
 
 
 # ---- Tests for confidence thresholds ----

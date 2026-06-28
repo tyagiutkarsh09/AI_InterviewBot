@@ -36,6 +36,9 @@ export class VoiceCapture {
   private ttsFlushChain: Promise<void> = Promise.resolve();
   private nextPlayTime = 0;
   private audioGen = 0;
+  private pendingPlaybackCount = 0;
+  private playbackWaiters: Array<() => void> = [];
+  private turnCompletePending = false;
   private reconnectCount = 0;
   private stopped = false;
   private endingSession = false;
@@ -110,12 +113,18 @@ export class VoiceCapture {
     source.connect(this.audioCtx.destination);
 
     const startAt = Math.max(this.audioCtx.currentTime, this.nextPlayTime);
+    this.pendingPlaybackCount++;
     source.start(startAt);
     this.nextPlayTime = startAt + decoded.duration;
 
     this.scheduledSources.push(source);
     source.onended = () => {
       this.scheduledSources = this.scheduledSources.filter((s) => s !== source);
+      this.pendingPlaybackCount = Math.max(0, this.pendingPlaybackCount - 1);
+      if (this.pendingPlaybackCount === 0) {
+        const waiters = this.playbackWaiters.splice(0);
+        waiters.forEach((resolve) => resolve());
+      }
     };
   }
 
@@ -141,7 +150,32 @@ export class VoiceCapture {
     }
     this.scheduledSources = [];
     this.ttsChunks = [];
+    this.pendingPlaybackCount = 0;
+    const waiters = this.playbackWaiters.splice(0);
+    waiters.forEach((resolve) => resolve());
+    this.turnCompletePending = false;
     this.nextPlayTime = 0;
+  }
+
+  private async _ackTtsCompleteAfterPlayback(): Promise<void> {
+    const gen = this.audioGen;
+    if (this.turnCompletePending) return;
+    this.turnCompletePending = true;
+
+    try {
+      await this.ttsFlushChain;
+      if (this.stopped || gen !== this.audioGen) return;
+
+      if (this.pendingPlaybackCount > 0) {
+        await new Promise<void>((resolve) => this.playbackWaiters.push(resolve));
+      }
+
+      if (!this.stopped && gen === this.audioGen && this.turnCompletePending) {
+        this._sendControl({ event: 'tts_complete' });
+      }
+    } finally {
+      this.turnCompletePending = false;
+    }
   }
 
   private async _initAudio(): Promise<void> {
@@ -258,6 +292,8 @@ export class VoiceCapture {
     } else if (event === 'tts_sentence_complete') {
       // Sentence fully streamed — decode and schedule it for playback
       this._onSentenceComplete();
+    } else if (event === 'tts_turn_complete') {
+      void this._ackTtsCompleteAfterPlayback();
     } else if (event === 'interview_complete') {
       this.endingSession = true;
       this._setState('idle');

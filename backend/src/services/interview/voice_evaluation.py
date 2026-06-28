@@ -131,6 +131,13 @@ def _format_transcript(voice_data: dict[str, Any]) -> str:
 
 def _build_prompt(voice_data: dict[str, Any], metrics: InterviewMetrics) -> str:
     template = _PROMPT_PATH.read_text(encoding="utf-8")
+
+    # Inject live per-topic scores so the evaluator does not cold-re-score from
+    # the transcript (the "double-pass" scoring bug).  An empty dict gets a
+    # sentinel so the LLM still receives a coherent message.
+    raw_scores: dict[str, float] = json.loads(voice_data.get("running_scores", "{}"))
+    running_scores_text = json.dumps(raw_scores, indent=2) if raw_scores else "(none recorded)"
+
     return template.format(
         job_role=voice_data.get("job_role", ""),
         experience_level=voice_data.get("experience_level", "mid"),
@@ -143,6 +150,7 @@ def _build_prompt(voice_data: dict[str, Any], metrics: InterviewMetrics) -> str:
         follow_ups_used=metrics.follow_ups_used,
         barge_ins=metrics.barge_ins,
         silence_strikes=metrics.silence_strikes,
+        running_scores=running_scores_text,
     )
 
 

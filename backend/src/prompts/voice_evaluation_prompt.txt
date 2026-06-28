@@ -15,9 +15,18 @@ Candidate: {candidate_name}
 - Barge-ins: {barge_ins}
 - Silence strikes: {silence_strikes}
 
+## Running Scores (Live — Per-Topic)
+The following per-topic scores were recorded in real-time by the evaluator as the interview progressed:
+
+{running_scores}
+
+These scores are AUTHORITATIVE. Populate the output `topic_scores` and the per-question `score` fields DIRECTLY from these live scores. Do NOT re-derive or re-score them from the transcript.
+
 ## Instructions
 
-Evaluate the candidate across these dimensions. For each, give a score (0-10), a brief explanation, and a quote from the transcript as evidence.
+This was a spoken interview — award partial credit for partial answers and calibrate to the candidate's stated experience level.
+
+Evaluate the candidate across these four cross-cutting dimensions. For each, give a score (0-10), a brief explanation, and a quote from the transcript as evidence.
 
 1. Communication Clarity — How clearly and coherently did the candidate express ideas?
 2. Technical Depth — How well did the candidate demonstrate technical knowledge relevant to the role?
@@ -32,8 +41,8 @@ Also provide:
 - The best answer (which question, brief summary, why it stood out)
 - The weakest answer (which question, brief summary, why it was weak)
 - A hiring recommendation: one of strong_yes, yes, maybe, no, strong_no
-- An overall score (0-10, weighted average of category scores)
-- Per-question scores from the running scores provided
+- An overall score (0-10, weighted average of the four category scores above)
+- Per-question scores: use the live running scores provided above — do NOT re-derive them from the transcript
 
 Respond in this exact JSON format (no markdown, no extra text):
 {{

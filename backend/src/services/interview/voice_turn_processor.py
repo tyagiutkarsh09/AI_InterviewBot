@@ -8,9 +8,9 @@ Per-session state:
 Barge-in: speech during bot_speaking → cancel TTS, send stop signal.
 
 Silence timeouts (managed via _silence_monitor, all spoken via TTS):
-  8s   → gentle nudge ("Take your time…")
-  18s  → check-in ("Are you still there? … running into any issues?")
-  30s  → silence_strike++, then deterministically advance to the next question
+  12s  → gentle nudge ("Take your time…")
+  30s  → check-in ("Are you still there?…")
+  60s  → silence_strike++, then deterministically advance to the next question
          (or enter wrap-up if none remain) — no LLM call
 """
 
@@ -32,15 +32,17 @@ from src.types.interview import Question
 
 logger = logging.getLogger(__name__)
 
-SILENCE_PROMPT_SECS = 8     # first gentle nudge
-SILENCE_CHECKIN_SECS = 18   # "are you still there / facing an issue" check-in
-SILENCE_STRIKE_SECS = 30    # strike + advance to next question
+SILENCE_PROMPT_SECS = 12    # first gentle nudge
+SILENCE_CHECKIN_SECS = 30   # "are you still there" check-in
+SILENCE_STRIKE_SECS = 60    # strike + advance to next question
+SILENCE_GRACE_SECS = 30     # accept-thinking grace — delays first nudge when set
 COMPLETION_WAIT_TIMEOUT_SECS = 90.0
 COMPLETION_POLL_INTERVAL_SECS = 0.25
+MAX_CONSECUTIVE_SILENCE_STRIKES = 3
 
 # Spoken silence check-ins (deterministic — never LLM-generated).
 SILENCE_PROMPT_1 = "Take your time — I'm here whenever you're ready."
-SILENCE_PROMPT_2 = "Are you still there? Is everything okay, or are you running into any issues?"
+SILENCE_PROMPT_2 = "Are you still there? No rush — take all the time you need."
 SILENCE_ADVANCE = "No problem — let's move on to the next question."
 
 
@@ -164,9 +166,22 @@ class VoiceTurnState:
         if not signal_turn_end:
             return
 
+        await _send_json(self.ws, {"event": "tts_turn_complete"})
+
+    def open_candidate_turn_after_playback(self) -> None:
+        """Open the response window after the browser confirms audio playback ended.
+
+        If the voice session has ``silence_grace_pending`` set (written by the
+        wait-request path), the silence monitor starts in grace mode so the
+        first nudge is delayed by SILENCE_GRACE_SECS instead of SILENCE_PROMPT_SECS.
+        The flag is cleared immediately after reading it.
+        """
         set_voice_field(self.session_id, "state", "WAITING_FOR_CANDIDATE")
-        await _send_json(self.ws, {"event": "turn", "speaker": "candidate"})
-        self._start_silence_monitor()
+        session_data = get_voice_session(self.session_id)
+        grace = bool(session_data and session_data.get("silence_grace_pending"))
+        if grace:
+            set_voice_field(self.session_id, "silence_grace_pending", "")
+        self._start_silence_monitor(grace=grace)
 
     async def _speak_silence_prompt(self, text: str) -> None:
         """Voice a silence check-in through TTS.
@@ -196,10 +211,10 @@ class VoiceTurnState:
             self.bot_speaking = False
             set_voice_field(self.session_id, "state", "WAITING_FOR_CANDIDATE")
 
-    def _start_silence_monitor(self) -> None:
+    def _start_silence_monitor(self, grace: bool = False) -> None:
         if self._silence_task and not self._silence_task.done():
             self._silence_task.cancel()
-        self._track_task("_silence_task", asyncio.create_task(self._silence_monitor()))
+        self._track_task("_silence_task", asyncio.create_task(self._silence_monitor(grace=grace)))
 
     def cancel_silence_monitor(self) -> None:
         if self._silence_task and not self._silence_task.done():
@@ -251,9 +266,10 @@ class VoiceTurnState:
             })
             set_voice_field(self.session_id, "state", "WAITING_FOR_CANDIDATE")
 
-    async def _silence_monitor(self) -> None:
+    async def _silence_monitor(self, grace: bool = False) -> None:
         try:
-            await asyncio.sleep(SILENCE_PROMPT_SECS)
+            first_wait = SILENCE_GRACE_SECS if grace else SILENCE_PROMPT_SECS
+            await asyncio.sleep(first_wait)
             await self._speak_silence_prompt(SILENCE_PROMPT_1)
 
             await asyncio.sleep(SILENCE_CHECKIN_SECS - SILENCE_PROMPT_SECS)
@@ -262,16 +278,32 @@ class VoiceTurnState:
             await asyncio.sleep(SILENCE_STRIKE_SECS - SILENCE_CHECKIN_SECS)
             strikes = increment_voice_field(self.session_id, "silence_strikes")
             logger.info("Silence strike %d session=%s", strikes, self.session_id)
+
+            if strikes >= MAX_CONSECUTIVE_SILENCE_STRIKES:
+                logger.warning(
+                    "Max silence strikes (%d) reached session=%s — auto-ending",
+                    strikes, self.session_id,
+                )
+                await _send_json(self.ws, {
+                    "event": "silence_strike",
+                    "count": strikes,
+                    "action": "end_session",
+                })
+                await _send_json(self.ws, {
+                    "event": "error",
+                    "message": "Session ended due to extended inactivity.",
+                })
+                try:
+                    await self.ws.close(code=1000)
+                except Exception:
+                    pass
+                return
+
             await _send_json(self.ws, {
                 "event": "silence_strike",
                 "count": strikes,
                 "action": "advance_question",
             })
-            # Run the advance in its own task so this coroutine returns cleanly:
-            # the advance's stream_response starts a fresh silence monitor, which
-            # would otherwise cancel this still-running coroutine mid-await and
-            # cut off the next question's audio. Keep the handle so speech_start
-            # and disconnect cleanup can still cancel the pending advance.
             self._track_task(
                 "_silence_advance_task",
                 asyncio.create_task(self._advance_after_silence()),
@@ -317,6 +349,9 @@ async def process_voice_turn(
     # Handle barge-in: if bot was speaking when speech detected
     if turn_state.bot_speaking:
         await turn_state.handle_barge_in()
+
+    # Real speech resets the consecutive silence strike counter
+    set_voice_field(session_id, "silence_strikes", 0)
 
     session_data = get_voice_session(session_id)
     if session_data is None:

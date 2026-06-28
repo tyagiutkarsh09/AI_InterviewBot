@@ -9,6 +9,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -24,13 +25,15 @@ from src.services.audio.voice_session import (
     create_voice_session,
     get_voice_session,
 )
-from src.services.interview.plan_builder import build_voice_plan, InsufficientQuestionsError
+from src.services.interview.plan_builder import assemble_voice_plan
+from src.services.interview.plan_floor import assess_plan_capacity, TooThinError
+from src.services.interview.plan_draft_store import save_plan_draft, get_plan_draft
 from src.services.interview.warmup import generate_introduction, build_ease_in
-from src.services.llm.jd_analysis import analyze_jd, JDAnalysisError
-from src.services.llm.resume_analysis import analyze_resume, ResumeAnalysisError
-from src.services.questions.question_bank import get_question_set, eligible_question_count
+from src.services.llm.interview_planner import plan_interview, PlannerError
+from src.services.questions.question_bank import get_question_set
 from src.types.config import JDSummary
 from src.types.interview import ExperienceLevel
+from src.types.planning import InterviewPlanDraft
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/voice", tags=["voice"])
@@ -128,143 +131,191 @@ async def start_voice_session(body: VoiceSessionStartRequest, request: Request) 
     )
 
 
-VOICE_CORE_RATIO = 0.7   # ~70% bank / 30% JD when a JD is attached
 MIN_QUESTIONS = 5
-MAX_QUESTIONS = 10
+MAX_QUESTIONS = 8
+
+
+class PlanPreviewResponse(BaseModel):
+    draft_id: str
+    role_title: str
+    questions: list[dict]
+    requested: int
+    usable_count: int
+    needs_confirmation: bool
+
+
+class StartFromDraftRequest(BaseModel):
+    draft_id: str
+    candidate_name: str = "Candidate"
 
 
 @router.post(
-    "/session/start-from-jd",
-    response_model=VoiceSessionStartResponse,
-    status_code=status.HTTP_201_CREATED,
+    "/plan/preview",
+    response_model=PlanPreviewResponse,
     dependencies=[Depends(require_admin)],
 )
-async def start_voice_session_from_jd(
-    request: Request,
+async def preview_plan(
+    jd: UploadFile = File(...),
     resume: Optional[UploadFile] = File(None),
-    jd: Optional[UploadFile] = File(None),
-    candidate_name: str = Form("Candidate"),
     job_role: str = Form(...),
     experience_level: ExperienceLevel = Form(ExperienceLevel.MID),
     num_questions: int = Form(MIN_QUESTIONS),
-) -> VoiceSessionStartResponse:
+) -> PlanPreviewResponse:
+    """Generate a JD-driven plan, cache it as a draft, and return it for admin review.
+
+    Regenerate = call this again (new draft_id). The admin then confirms/starts via
+    start_from_draft. Fails loud: unreadable file -> 422, planner failure -> 502,
+    too-thin JD (below the floor) -> 422.
+    """
     if not (MIN_QUESTIONS <= num_questions <= MAX_QUESTIONS):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"num_questions must be between {MIN_QUESTIONS} and {MAX_QUESTIONS}.",
         )
 
-    # --- Resume (optional, primary): extract + analyze -> skills + personalized Qs ---
-    resume_skills: list[str] = []
-    resume_questions: list[dict] = []
+    request_started = time.perf_counter()
+    logger.info(
+        "Voice plan preview started jd=%s resume=%s role=%s level=%s requested=%d",
+        jd.filename or "<missing>",
+        resume.filename if resume is not None else "<none>",
+        job_role,
+        experience_level.value,
+        num_questions,
+    )
+
+    jd_bytes = await jd.read()
+    try:
+        # Offloaded to a thread: sync pypdf/docx + the sync Anthropic client would
+        # otherwise block the single event loop and freeze every concurrent session.
+        jd_extract_started = time.perf_counter()
+        jd_text = await asyncio.to_thread(extract_jd_text, jd.filename or "", jd_bytes)
+        logger.info(
+            "Voice plan preview jd extracted jd=%s bytes=%d chars=%d elapsed_ms=%d",
+            jd.filename or "<missing>",
+            len(jd_bytes),
+            len(jd_text),
+            round((time.perf_counter() - jd_extract_started) * 1000),
+        )
+    except JDExtractError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not read the job description file.",
+        )
+
+    resume_text: Optional[str] = None
     if resume is not None:
         resume_bytes = await resume.read()
         try:
-            # Offloaded to a thread: extract_jd_text (sync pypdf/docx) and analyze_resume
-            # (sync Anthropic client) would otherwise block the single event loop and
-            # freeze the whole server. See get_async_anthropic_client docstring.
+            resume_extract_started = time.perf_counter()
             resume_text = await asyncio.to_thread(
                 extract_jd_text, resume.filename or "", resume_bytes
+            )
+            logger.info(
+                "Voice plan preview resume extracted resume=%s bytes=%d chars=%d elapsed_ms=%d",
+                resume.filename or "<missing>",
+                len(resume_bytes),
+                len(resume_text),
+                round((time.perf_counter() - resume_extract_started) * 1000),
             )
         except JDExtractError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Could not read the resume file.",
             )
-        try:
-            resume_skills, resume_questions = await asyncio.to_thread(
-                analyze_resume, resume_text, num_questions=2
-            )
-        except ResumeAnalysisError as exc:
-            logger.error("Voice resume analysis failed: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Could not analyze the resume. Try again.",
-            )
-
-    # --- JD (optional filler): extract + analyze -> jd_summary + role-specific Qs ---
-    jd_summary = JDSummary(skills=resume_skills)
-    jd_ideas: list[dict] = []
-    if jd is not None:
-        jd_bytes = await jd.read()
-        try:
-            # Offloaded to a thread for the same reason as the resume path above.
-            jd_text = await asyncio.to_thread(extract_jd_text, jd.filename or "", jd_bytes)
-        except JDExtractError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Could not read the job description file.",
-            )
-        try:
-            parsed_summary, jd_ideas = await asyncio.to_thread(analyze_jd, jd_text)
-        except JDAnalysisError as exc:
-            logger.error("Voice JD analysis failed: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Could not analyze the job description. Try again.",
-            )
-        # Dedup case-insensitively (LLM-derived skills aren't case-normalized) so a
-        # "Python"/"python" pair doesn't burn two of the 8 skill slots. Resume comes
-        # first, so the candidate's own casing wins on collision.
-        merged: list[str] = []
-        seen: set[str] = set()
-        for skill in [*resume_skills, *parsed_summary.skills]:
-            if skill.lower() not in seen:
-                seen.add(skill.lower())
-                merged.append(skill)
-        merged = merged[:8]
-        jd_summary = JDSummary(
-            skills=merged,
-            responsibilities=parsed_summary.responsibilities,
-            seniority_signals=parsed_summary.seniority_signals,
-        )
-
-    # --- No-JD cap: the bank can't exceed its per-level eligibility ---
-    technical_count = num_questions
-    if not jd_ideas:
-        capacity = eligible_question_count(experience_level)
-        if technical_count > capacity:
-            logger.warning(
-                "Capping num_questions %d -> %d (no JD, level=%s bank capacity)",
-                technical_count, capacity, experience_level.value,
-            )
-            technical_count = capacity
 
     try:
-        plan = build_voice_plan(
-            role=job_role,
-            experience_level=experience_level,
-            jd_summary=jd_summary,
-            jd_question_ideas=jd_ideas,
-            resume_questions=resume_questions,
-            technical_count=technical_count,
-            core_ratio=VOICE_CORE_RATIO,
+        planner_started = time.perf_counter()
+        logger.info(
+            "Voice plan preview planner started role=%s level=%s requested=%d jd_chars=%d resume_chars=%d",
+            job_role,
+            experience_level.value,
+            num_questions,
+            len(jd_text),
+            len(resume_text or ""),
         )
-    except InsufficientQuestionsError as exc:
-        logger.warning("Voice plan could not be built: %s", exc)
+        draft = await asyncio.to_thread(
+            plan_interview, jd_text, resume_text, job_role, experience_level, num_questions
+        )
+        logger.info(
+            "Voice plan preview planner finished role=%s questions=%d elapsed_ms=%d",
+            draft.role_title,
+            len(draft.questions),
+            round((time.perf_counter() - planner_started) * 1000),
+        )
+    except PlannerError as exc:
+        logger.error("Voice planner failed: %s", exc)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Not enough questions available to build the interview for this role and level.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not analyze the job description. Try again.",
         )
 
+    try:
+        usable_count, shortfall = assess_plan_capacity(len(draft.questions), num_questions)
+    except TooThinError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    # Cache the full draft + resolved usable_count so start_from_draft rebuilds the
+    # EXACT previewed plan without re-calling the LLM.
+    draft_id = save_plan_draft({
+        "draft": draft.model_dump(),
+        "usable_count": usable_count,
+        "job_role": job_role,
+        "experience_level": experience_level.value,
+    })
+    logger.info(
+        "Voice plan preview completed draft_id=%s usable=%d requested=%d shortfall=%s total_elapsed_ms=%d",
+        draft_id,
+        usable_count,
+        num_questions,
+        shortfall,
+        round((time.perf_counter() - request_started) * 1000),
+    )
+    return PlanPreviewResponse(
+        draft_id=draft_id,
+        role_title=draft.role_title,
+        questions=[pq.model_dump() for pq in draft.questions[:usable_count]],
+        requested=num_questions,
+        usable_count=usable_count,
+        needs_confirmation=shortfall,
+    )
+
+
+@router.post(
+    "/session/start-from-draft",
+    response_model=VoiceSessionStartResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
+async def start_from_draft(body: StartFromDraftRequest, request: Request) -> VoiceSessionStartResponse:
+    cached = get_plan_draft(body.draft_id)
+    if cached is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Plan draft not found or expired. Please regenerate.",
+        )
+
+    draft = InterviewPlanDraft(**cached["draft"])
+    plan = assemble_voice_plan(draft, usable_count=int(cached["usable_count"]))
+
     session_id = str(uuid.uuid4())
-    intro_text = generate_introduction(candidate_name, job_role, len(plan.questions))
-    ease_in_text = build_ease_in(candidate_name)
+    job_role = draft.role_title or cached["job_role"]
+    intro_text = generate_introduction(body.candidate_name, job_role, len(plan.questions))
+    ease_in_text = build_ease_in(body.candidate_name)
+    jd_summary = JDSummary(skills=draft.skills)
     create_voice_session(
         session_id=session_id,
-        candidate_name=candidate_name,
+        candidate_name=body.candidate_name,
         job_role=job_role,
-        experience_level=experience_level.value,
-        required_skills=jd_summary.skills,
+        experience_level=cached["experience_level"],
+        required_skills=draft.skills,
         questions_json=_json.dumps([q.model_dump() for q in plan.questions]),
         intro_text=intro_text,
         ease_in_text=ease_in_text,
         jd_summary_json=_json.dumps(jd_summary.model_dump()),
     )
     logger.info(
-        "Voice session created session=%s role=%s technical=%d total=%d jd=%s resume=%s",
-        session_id, job_role, technical_count, len(plan.questions),
-        jd is not None, resume is not None,
+        "Voice session from draft session=%s role=%s questions=%d",
+        session_id, job_role, len(plan.questions),
     )
 
     token = _issue_token(session_id)
@@ -272,7 +323,6 @@ async def start_voice_session_from_jd(
     if not ws_base:
         scheme = "wss" if request.url.scheme == "https" else "ws"
         ws_base = f"{scheme}://{request.url.netloc}"
-
     return VoiceSessionStartResponse(
         session_id=session_id,
         token=token,

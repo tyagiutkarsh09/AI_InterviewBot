@@ -5,6 +5,7 @@ LLM-sourced text wrapped into the Question model with a generic competency rubri
 so the existing evaluator works unchanged.
 """
 from src.types.interview import Question, QuestionType
+from src.types.planning import PlannedQuestion
 
 _GENERIC_RUBRIC = {
     "criteria": [
@@ -38,19 +39,40 @@ def build_behavioral_question() -> Question:
     )
 
 
-def build_project_question() -> Question:
+def build_project_question(grounded_text: str = "") -> Question:
     return Question(
         id="project_0",
         topic="project deep-dive",
         difficulty="medium",
         question_type=QuestionType.SCENARIO,
         experience_level="all",
-        question_text=_PROJECT_TEXT,
+        question_text=grounded_text.strip() or _PROJECT_TEXT,
         rubric=_GENERIC_RUBRIC,
         tags=["project_deepdive"],
     )
 
 
+def build_planned_question(pq: PlannedQuestion, index: int) -> Question:
+    """Wrap a planner question into the Question model the run/eval pipeline consumes.
+
+    rubric_keypoints live under rubric["key_points"] so the existing eval prompt
+    (which json.dumps(question.rubric)) feeds them to the scorer unchanged.
+    """
+    return Question(
+        id=f"{pq.source}_{index}",
+        topic=pq.competency or "role-specific",
+        difficulty=pq.difficulty,
+        question_type=QuestionType.SCENARIO,
+        experience_level="all",
+        question_text=pq.question_text,
+        rubric={"key_points": pq.rubric_keypoints},
+        tags=[f"{pq.source}_generated"],
+        time_budget_sec=pq.time_budget_sec,
+    )
+
+
+# Legacy builder for the text/admin-config flow (build_plan). The voice flow uses
+# build_planned_question instead.
 def build_jd_question(question_text: str, topic: str, index: int) -> Question:
     return Question(
         id=f"jd_{index}",
@@ -61,17 +83,4 @@ def build_jd_question(question_text: str, topic: str, index: int) -> Question:
         question_text=question_text,
         rubric=_GENERIC_RUBRIC,
         tags=["jd_generated"],
-    )
-
-
-def build_resume_question(question_text: str, topic: str, index: int) -> Question:
-    return Question(
-        id=f"resume_{index}",
-        topic=topic or "candidate background",
-        difficulty="medium",
-        question_type=QuestionType.SCENARIO,
-        experience_level="all",
-        question_text=question_text,
-        rubric=_GENERIC_RUBRIC,
-        tags=["resume_generated"],
     )

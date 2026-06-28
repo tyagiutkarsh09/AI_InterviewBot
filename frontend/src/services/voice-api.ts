@@ -1,10 +1,19 @@
 import type {
+  PlanPreviewResponse,
+  StartFromDraftRequest,
   VoiceSessionStartRequest,
   VoiceSessionStartResponse,
 } from "@/types/voice-interview";
 import { ApiClientError } from "@/services/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+function logVoiceApiDebug(message: string, context: Record<string, unknown> = {}) {
+  console.debug(`[voice-api] ${message}`, {
+    at: new Date().toISOString(),
+    ...context,
+  });
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${path}`;
@@ -36,15 +45,23 @@ export async function startVoiceSession(
 
 const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? "change-me-admin-key";
 
-export async function startVoiceSessionFromJd(
+export async function previewPlan(
   form: FormData
-): Promise<VoiceSessionStartResponse> {
-  const res = await fetch(`${API_BASE}/api/v1/voice/session/start-from-jd`, {
+): Promise<PlanPreviewResponse> {
+  const startedAt = performance.now();
+  logVoiceApiDebug("preview-plan-request", {
+    url: `${API_BASE}/api/v1/voice/plan/preview`,
+    formKeys: Array.from(form.keys()),
+  });
+  const res = await fetch(`${API_BASE}/api/v1/voice/plan/preview`, {
     method: "POST",
-    // X-Admin-Key only — do NOT set Content-Type; the browser adds the
-    // multipart boundary automatically when the body is FormData.
     headers: { "X-Admin-Key": ADMIN_KEY },
     body: form,
+  });
+  logVoiceApiDebug("preview-plan-response", {
+    status: res.status,
+    ok: res.ok,
+    elapsedMs: Math.round(performance.now() - startedAt),
   });
   if (!res.ok) {
     let detail: string | undefined;
@@ -56,7 +73,31 @@ export async function startVoiceSessionFromJd(
     }
     throw new ApiClientError(`HTTP ${res.status}`, res.status, detail);
   }
-  return res.json() as Promise<VoiceSessionStartResponse>;
+  const body = (await res.json()) as PlanPreviewResponse;
+  logVoiceApiDebug("preview-plan-payload", {
+    draftId: body.draft_id,
+    roleTitle: body.role_title,
+    questionCount: body.questions.length,
+    usableCount: body.usable_count,
+    needsConfirmation: body.needs_confirmation,
+  });
+  return body;
+}
+
+export async function startFromDraft(
+  body: StartFromDraftRequest
+): Promise<VoiceSessionStartResponse> {
+  return request<VoiceSessionStartResponse>(
+    "/api/v1/voice/session/start-from-draft",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Key": ADMIN_KEY,
+      },
+      body: JSON.stringify(body),
+    }
+  );
 }
 
 export async function getVoiceSessionState(sessionId: string) {
