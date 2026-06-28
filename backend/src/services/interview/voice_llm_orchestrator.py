@@ -1,9 +1,12 @@
 """
 Voice LLM orchestrator — Feature [9] FSM wire-up.
 
+B′ model: the LLM drives a multi-turn exchange per question; code enforces
+invariants (follow-up cap, loop guard, score-once, clamp-1 coverage).
+
 Imports existing:
   - InterviewState (types/interview.py)
-  - build_system_prompt, build_answer_evaluation_prompt (services/llm/prompt_builder.py)
+  - build_voice_system_prompt, build_voice_answer_evaluation_prompt (services/llm/prompt_builder.py)
   - parse_xml_response (services/llm/response_parser.py)
 
 Never copies, always imports.
@@ -26,8 +29,8 @@ from src.services.audio.voice_session import (
     append_transcript_turn,
 )
 from src.services.llm.prompt_builder import (
-    build_system_prompt,
-    build_answer_evaluation_prompt,
+    build_voice_system_prompt,
+    build_voice_answer_evaluation_prompt,
 )
 from src.services.llm.response_parser import parse_xml_response, validate_single_question
 from src.types.interview import (
@@ -41,6 +44,10 @@ from src.types.interview import (
 logger = logging.getLogger(__name__)
 
 LOW_CONFIDENCE_THRESHOLD = 0.5
+
+# Maximum number of consecutive non-advancing turns before the loop guard fires
+# and forces an acknowledge_advance regardless of the LLM's choice.
+LOOP_GUARD_MAX = 3
 
 
 def max_follow_ups_for(question: Question) -> int:
@@ -72,6 +79,29 @@ _NO_QUESTION_PHRASES = (
     "all good", "im fine", "i'm fine", "no thanks", "no thank you", "that's all",
     "thats all", "nothing else",
 )
+
+
+def _normalize_action(a: str) -> str:
+    """Normalize the LLM's action string to one of the five questioning-phase
+    actions understood by the orchestrator.
+
+    Valid set: {answer_clarification, follow_up, accept_thinking, redirect,
+    acknowledge_advance}.  Everything else — including legacy names
+    (acknowledge, transition, ask_question, wrap_up) and unknown strings —
+    maps to 'acknowledge_advance' (safe forward progress: never strands the
+    candidate on an unanswerable question).
+    """
+    normalized = a.lower().strip()
+    _VALID = {
+        "answer_clarification",
+        "follow_up",
+        "accept_thinking",
+        "redirect",
+        "acknowledge_advance",
+    }
+    if normalized in _VALID:
+        return normalized
+    return "acknowledge_advance"
 
 
 def _acknowledgment_only(spoken: str) -> str:
@@ -209,6 +239,10 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
 
     current_q = questions[current_idx]
 
+    # A real candidate utterance arrived — consume any prior accept_thinking grace.
+    # The accept_thinking branch below will re-set it if appropriate.
+    set_voice_field(session_id, "silence_grace_pending", "")
+
     # Record the candidate's answer in the transcript before calling the LLM.
     # Tagging with question_id allows deterministic Q/A extraction during evaluation
     # rather than relying on the LLM to infer the mapping from transcript position.
@@ -222,8 +256,8 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
 
     session = _build_session_state(voice_data)
 
-    system_prompt = build_system_prompt()
-    user_prompt = build_answer_evaluation_prompt(
+    system_prompt = build_voice_system_prompt()
+    user_prompt = build_voice_answer_evaluation_prompt(
         question=current_q,
         answer=transcript,
         session=session,
@@ -243,42 +277,76 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         logger.error("LLM call failed session=%s: %s", session_id, exc)
         return "Thank you. Let me continue with the next question."
 
-    # Persist score to Redis — suppress if LLM confidence is too low to trust
-    if parsed.score is not None and parsed.score_topic:
-        if parsed.confidence is not None and parsed.confidence < LOW_CONFIDENCE_THRESHOLD:
-            logger.warning(
-                "Score suppressed (low confidence) session=%s topic=%s score=%.1f confidence=%.2f",
-                session_id, parsed.score_topic, parsed.score, parsed.confidence,
-            )
-            increment_voice_field(session_id, "low_confidence_turns")
-        else:
-            scores: dict[str, float] = json.loads(
-                voice_data.get("running_scores", "{}")
-            )
-            scores[parsed.score_topic] = parsed.score
-            set_voice_field(session_id, "running_scores", json.dumps(scores))
-            logger.info(
-                "Score recorded session=%s topic=%s score=%.1f",
-                session_id, parsed.score_topic, parsed.score,
-            )
-            if parsed.confidence is not None:
-                llm_confs: dict[str, float] = json.loads(
-                    voice_data.get("llm_confidence_by_topic", "{}")
-                )
-                llm_confs[parsed.score_topic] = parsed.confidence
-                set_voice_field(session_id, "llm_confidence_by_topic", json.dumps(llm_confs))
-
-    # Advance question or follow-up
-    action = parsed.action
+    # --- Action routing ---
+    action = _normalize_action(parsed.action)
     follow_up_count = int(voice_data.get("follow_up_count", 0))
+    non_advancing = int(voice_data.get("non_advancing_turns", 0))
     MAX_FOLLOW_UPS = max_follow_ups_for(current_q)
 
-    if action in ("acknowledge", "transition") or follow_up_count >= MAX_FOLLOW_UPS:
-        # Move to next question
+    # Clamp 3: follow-up cap — model wants another follow_up but we're at the limit.
+    if action == "follow_up" and follow_up_count >= MAX_FOLLOW_UPS:
+        logger.info(
+            "Clamp 3 (follow-up cap) fired session=%s topic=%s follow_up_count=%d",
+            session_id, current_q.topic, follow_up_count,
+        )
+        action = "acknowledge_advance"
+    # Clamp 5: loop guard — too many consecutive non-advancing turns, force progress.
+    elif action in {"follow_up", "answer_clarification", "accept_thinking", "redirect"} \
+            and non_advancing >= LOOP_GUARD_MAX:
+        logger.warning(
+            "Clamp 5 (loop guard) fired session=%s topic=%s non_advancing=%d",
+            session_id, current_q.topic, non_advancing,
+        )
+        action = "acknowledge_advance"
+
+    # -----------------------------------------------------------------------
+    # acknowledge_advance — the ONLY path that scores AND advances the index
+    # -----------------------------------------------------------------------
+    if action == "acknowledge_advance":
+        # Gather current running scores from voice_data (fresh at top of turn).
+        scores: dict[str, float] = json.loads(voice_data.get("running_scores", "{}"))
+
+        if parsed.score is not None:
+            if parsed.confidence is not None and parsed.confidence < LOW_CONFIDENCE_THRESHOLD:
+                increment_voice_field(session_id, "low_confidence_turns")
+                logger.warning(
+                    "Score suppressed (low confidence) session=%s topic=%s "
+                    "score=%.1f confidence=%.2f",
+                    session_id, current_q.topic, parsed.score, parsed.confidence,
+                )
+            else:
+                # Key by the QUESTION's own topic, not parsed.score_topic, so scores
+                # stay aligned to questions even when the model mis-labels the topic.
+                scores[current_q.topic] = parsed.score
+                set_voice_field(session_id, "running_scores", json.dumps(scores))
+                logger.info(
+                    "Score recorded session=%s topic=%s score=%.1f",
+                    session_id, current_q.topic, parsed.score,
+                )
+                if parsed.confidence is not None:
+                    llm_confs: dict[str, float] = json.loads(
+                        voice_data.get("llm_confidence_by_topic", "{}")
+                    )
+                    llm_confs[current_q.topic] = parsed.confidence
+                    set_voice_field(session_id, "llm_confidence_by_topic", json.dumps(llm_confs))
+
+        # Clamp 2: no silent unscored advance — always surface missing scores.
+        if current_q.topic not in scores:
+            unscored: list = json.loads(voice_data.get("unscored_topics", "[]"))
+            unscored.append(current_q.topic)
+            set_voice_field(session_id, "unscored_topics", json.dumps(unscored))
+            logger.warning(
+                "Advancing past unscored question session=%s topic=%s",
+                session_id, current_q.topic,
+            )
+
+        # Advance — exactly +1 (Clamp 4).
         next_idx = current_idx + 1
         set_voice_field(session_id, "current_question_idx", next_idx)
         set_voice_field(session_id, "follow_up_count", 0)
+        set_voice_field(session_id, "non_advancing_turns", 0)
 
+        # Clamp 1: coverage — never step past the last question.
         if next_idx >= len(questions):
             return _enter_wrap_up(
                 session_id,
@@ -291,8 +359,12 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         spoken = _acknowledgment_only(parsed.spoken_text) or "Thank you."
         return f"{spoken} {next_q.question_text}"
 
+    # -----------------------------------------------------------------------
+    # follow_up — probe one missing rubric key point; no score yet
+    # -----------------------------------------------------------------------
     elif action == "follow_up":
         set_voice_field(session_id, "follow_up_count", follow_up_count + 1)
+        set_voice_field(session_id, "non_advancing_turns", non_advancing + 1)
         fu_by_topic: dict[str, int] = json.loads(
             voice_data.get("follow_ups_by_topic", "{}")
         )
@@ -300,27 +372,43 @@ async def run_llm_turn(session_id: str, transcript: str) -> str:
         set_voice_field(session_id, "follow_ups_by_topic", json.dumps(fu_by_topic))
         # A follow-up's spoken_text IS the question, but the model sometimes packs
         # two into it; reduce to a single question before it reaches the candidate.
-        follow_up_text = validate_single_question(parsed.spoken_text) or "Could you tell me more about that?"
+        follow_up_text = (
+            validate_single_question(parsed.spoken_text) or "Could you tell me more about that?"
+        )
         append_transcript_turn(session_id, "bot", follow_up_text, entry_type="follow_up")
         return follow_up_text
 
-    else:
-        # Default: acknowledge and move on
-        next_idx = current_idx + 1
-        set_voice_field(session_id, "current_question_idx", next_idx)
-        set_voice_field(session_id, "follow_up_count", 0)
+    # -----------------------------------------------------------------------
+    # answer_clarification — bot answers the candidate's question about the
+    # interview question; spoken_text kept VERBATIM (may contain a '?').
+    # -----------------------------------------------------------------------
+    elif action == "answer_clarification":
+        set_voice_field(session_id, "non_advancing_turns", non_advancing + 1)
+        # Do NOT run _acknowledgment_only or validate_single_question here — the bot
+        # is answering the candidate's clarifying question and may legitimately end
+        # with re-posing the original question.
+        reply = parsed.spoken_text.strip() or "Good question — let me clarify."
+        append_transcript_turn(session_id, "bot", reply, entry_type="clarification")
+        return reply
 
-        if next_idx >= len(questions):
-            return _enter_wrap_up(
-                session_id,
-                voice_data,
-                lead_in=_acknowledgment_only(parsed.spoken_text) or "Thank you.",
-            )
+    # -----------------------------------------------------------------------
+    # accept_thinking — candidate asked for time; re-set grace flag
+    # -----------------------------------------------------------------------
+    elif action == "accept_thinking":
+        set_voice_field(session_id, "non_advancing_turns", non_advancing + 1)
+        set_voice_field(session_id, "silence_grace_pending", "1")
+        ack = parsed.spoken_text.strip() or "Of course — take your time."
+        append_transcript_turn(session_id, "bot", ack, entry_type="accept_thinking")
+        return ack
 
-        next_q = questions[next_idx]
-        append_transcript_turn(session_id, "bot", next_q.question_text, entry_type="question")
-        spoken = _acknowledgment_only(parsed.spoken_text) or "Thank you."
-        return f"{spoken} {next_q.question_text}"
+    # -----------------------------------------------------------------------
+    # redirect — candidate went off-topic; steer back without scoring
+    # -----------------------------------------------------------------------
+    else:  # action == "redirect"
+        set_voice_field(session_id, "non_advancing_turns", non_advancing + 1)
+        reply = parsed.spoken_text.strip() or "Let's come back to the question I asked."
+        append_transcript_turn(session_id, "bot", reply, entry_type="redirect")
+        return reply
 
 
 async def _trigger_final_evaluation(session_id: str) -> None:

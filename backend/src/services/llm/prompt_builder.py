@@ -101,3 +101,88 @@ def _format_transcript(turns: list[TurnRecord]) -> str:
         prefix = "INTERVIEWER" if t.speaker == "bot" else "CANDIDATE"
         lines.append(f"{prefix}: {t.text}")
     return "\n".join(lines)
+
+
+def build_voice_system_prompt() -> str:
+    return _load_prompt("voice_system_prompt.txt")
+
+
+def build_voice_answer_evaluation_prompt(
+    question: Question,
+    answer: str,
+    session: SessionState,
+) -> str:
+    """Voice-mode evaluation prompt.
+
+    Identical structure to build_answer_evaluation_prompt but with B′ turn
+    instruction: the LLM drives a multi-turn exchange and the code enforces
+    clamps. Text-mode build_answer_evaluation_prompt is NOT touched.
+    """
+    recent_turns = session.transcript[-6:]
+    transcript_text = _format_transcript(recent_turns)
+
+    key_points = question.rubric.get("key_points") if isinstance(question.rubric, dict) else None
+    key_points_text = json.dumps(key_points) if key_points else json.dumps(question.rubric)
+
+    turn_instruction = f"""The candidate may have asked you a clarifying question, gone off-topic, asked for
+time to think, or given a partial or complete answer. Read what just happened and
+choose the ONE action that fits:
+
+- answer_clarification: the candidate asked YOU about the question's meaning, scope,
+  or an assumption. Answer briefly and naturally — do NOT score; do NOT emit
+  <score_update>; do NOT advance.
+
+- accept_thinking: the candidate asked for time to think or said they need a moment.
+  Give a brief warm acknowledgement ("Of course, take your time."). Do NOT score;
+  do NOT move on.
+
+- redirect: the candidate went off-topic or misunderstood the question. Gently steer
+  back. Do NOT score.
+
+- follow_up: the answer is partial and there is a specific key point from the rubric
+  worth probing. Ask ONE focused follow-up. Do NOT emit <score_update> yet.
+
+- acknowledge_advance: the candidate has answered (or conceded, or been probed
+  enough). This is the ONLY action that records a score. Keep spoken_text to a brief
+  acknowledgement — no questions. Emit <score_update> for topic "{question.topic}"
+  scoring the WHOLE exchange against the key_points listed above; the score must
+  reflect only what the CANDIDATE said. Do NOT let your own explanation inflate it.
+  Calibrate depth of expectation to a {session.experience_level.value} candidate —
+  award partial credit for direction-correct answers.
+
+Never emit <score_update> on any action other than acknowledge_advance."""
+
+    return f"""
+<candidate_info>
+  Name: {session.candidate_name}
+  Role: {session.job_role}
+  Level: {session.experience_level.value}
+  Required skills: {', '.join(session.required_skills) or 'general'}
+</candidate_info>
+
+<interview_progress>
+  Current question: {session.current_question_idx + 1} of {len(session.questions)}
+  Follow-ups used: {session.follow_up_count}
+</interview_progress>
+
+<current_question>
+  Question: {question.question_text}
+  Topic: {question.topic}
+  Difficulty: {question.difficulty}
+  Expected answer key_points: {key_points_text}
+</current_question>
+
+<conversation_history>
+{transcript_text}
+</conversation_history>
+
+<running_scores>
+{json.dumps(session.running_scores, indent=2)}
+</running_scores>
+
+<turn_instruction>
+{turn_instruction}
+</turn_instruction>
+
+Candidate's answer: {answer}
+"""
